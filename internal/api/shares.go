@@ -212,7 +212,8 @@ func (a *ServerAPI) HandleRevokeShare(w http.ResponseWriter, r *http.Request, sh
 		return
 	}
 
-	isAdmin := a.cfg.CreateAPIKey != "" && bearer == a.cfg.CreateAPIKey
+	isAdmin := (a.cfg.AdminAPIKey != "" && bearer == a.cfg.AdminAPIKey) ||
+		(a.cfg.CreateAPIKey != "" && bearer == a.cfg.CreateAPIKey)
 	isShareToken := auth.VerifyToken(bearer, share.TokenHash)
 	if !isAdmin && !isShareToken {
 		http.Error(w, "Forbidden", http.StatusForbidden)

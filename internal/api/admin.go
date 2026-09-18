@@ -56,22 +56,26 @@ type StatsView struct {
 }
 
 func (h *AdminHandler) checkAuth(r *http.Request) bool {
-	if h.cfg.CreateAPIKey == "" {
-		return true // No API key required in dev mode
+	requiredKey := h.cfg.AdminAPIKey
+	if requiredKey == "" {
+		requiredKey = h.cfg.CreateAPIKey
+	}
+	if requiredKey == "" {
+		return true // No API key required
 	}
 
 	// 1. Check Bearer header
-	if token, err := auth.ExtractBearerToken(r); err == nil && token == h.cfg.CreateAPIKey {
+	if token, err := auth.ExtractBearerToken(r); err == nil && token == requiredKey {
 		return true
 	}
 
 	// 2. Check query parameter ?key=... (convenient for browser SSH port forwarding)
-	if key := r.URL.Query().Get("key"); key == h.cfg.CreateAPIKey {
+	if key := r.URL.Query().Get("key"); key == requiredKey {
 		return true
 	}
 
 	// 3. Check Cookie (if set by browser dashboard)
-	if cookie, err := r.Cookie("texlite_admin_key"); err == nil && cookie.Value == h.cfg.CreateAPIKey {
+	if cookie, err := r.Cookie("texlite_admin_key"); err == nil && cookie.Value == requiredKey {
 		return true
 	}
 

@@ -17,6 +17,7 @@ type ServerConfig struct {
 	AdminListenAddr    string
 	BaseDomain         string
 	DBPath             string
+	AdminAPIKey        string
 	CreateAPIKey       string
 	MaxActiveShares    int
 	MaxStreamsPerShare int
