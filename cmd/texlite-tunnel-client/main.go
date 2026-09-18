@@ -14,6 +14,7 @@ import (
 	"texlite-share/internal/config"
 	"texlite-share/internal/logging"
 	"texlite-share/internal/tunnel"
+	"texlite-share/internal/version"
 )
 
 func main() {
@@ -24,6 +25,8 @@ func main() {
 	localAddrExplicit := os.Getenv("TEXLITE_LOCAL_ADDR") != ""
 
 	// 2. Command-line flags override environment variables
+	showVersion := flag.Bool("version", false, "Show version information and exit")
+	flag.BoolVar(showVersion, "v", false, "Show version information and exit (shorthand)")
 	flag.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "Share server URL (default: http://127.0.0.1:9000, or env TEXLITE_SERVER_URL)")
 	flag.StringVar(&cfg.ShareID, "share-id", cfg.ShareID, "Assigned Share ID (optional, auto-creates if omitted)")
 	flag.StringVar(&cfg.Token, "token", cfg.Token, "Tunnel authentication token (optional, auto-creates if omitted)")
@@ -35,6 +38,11 @@ func main() {
 	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Info("texlite-tunnel-client"))
+		os.Exit(0)
+	}
 
 	flag.Visit(func(f *flag.Flag) {
 		if f.Name == "local-addr" {

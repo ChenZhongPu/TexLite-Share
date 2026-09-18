@@ -17,11 +17,14 @@ import (
 	"texlite-share/internal/database"
 	"texlite-share/internal/logging"
 	"texlite-share/internal/registry"
+	"texlite-share/internal/version"
 )
 
 func main() {
 	cfg := config.DefaultServerConfig()
 
+	showVersion := flag.Bool("version", false, "Show version information and exit")
+	flag.BoolVar(showVersion, "v", false, "Show version information and exit (shorthand)")
 	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "Address for the public server to listen on (for tunnels and visitors)")
 	flag.StringVar(&cfg.AdminListenAddr, "admin-listen", cfg.AdminListenAddr, "Address for dedicated admin management port (default: 127.0.0.1:9001, empty to disable)")
 	flag.StringVar(&cfg.BaseDomain, "base-domain", cfg.BaseDomain, "Base domain for public shares (e.g., share.local or share.example.com)")
@@ -38,10 +41,17 @@ func main() {
 
 	flag.Parse()
 
+	if *showVersion {
+		fmt.Println(version.Info("texlite-share-server"))
+		os.Exit(0)
+	}
+
 	logger := logging.InitLogger(*debug)
 	slog.SetDefault(logger)
 
 	slog.Info("starting texlite-share-server",
+		"version", version.Version,
+		"commit", version.GitCommit,
 		"listen", cfg.ListenAddr,
 		"admin_listen", cfg.AdminListenAddr,
 		"base_domain", cfg.BaseDomain,
