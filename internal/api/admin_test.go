@@ -41,23 +41,23 @@ func setupTestAdmin(t *testing.T, apiKey string) (*api.AdminHandler, http.Handle
 func TestAdminDashboardAndAPIs(t *testing.T) {
 	adminHandler, publicHandler, db, reg := setupTestAdmin(t, "admin-key-123")
 
-	// 1. Unauthenticated request to dashboard -> 401
-	unauthReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	unauthRec := httptest.NewRecorder()
-	adminHandler.ServeHTTP(unauthRec, unauthReq)
-	if unauthRec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401 Unauthorized, got %d", unauthRec.Code)
-	}
-
-	// 2. Authenticated request to dashboard via query parameter ?key=... -> 200 HTML
-	dashReq := httptest.NewRequest(http.MethodGet, "/admin?key=admin-key-123", nil)
+	// 1. Dashboard HTML loads on root route -> 200
+	dashReq := httptest.NewRequest(http.MethodGet, "/", nil)
 	dashRec := httptest.NewRecorder()
 	adminHandler.ServeHTTP(dashRec, dashReq)
 	if dashRec.Code != http.StatusOK {
-		t.Fatalf("expected 200 OK for dashboard, got %d", dashRec.Code)
+		t.Fatalf("expected 200 OK for dashboard HTML, got %d", dashRec.Code)
 	}
 	if !strings.Contains(dashRec.Body.String(), "TexLite Share") {
 		t.Fatal("dashboard HTML content missing expected title")
+	}
+
+	// 2. Unauthenticated API request -> 401 Unauthorized
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	unauthRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for API without key, got %d", unauthRec.Code)
 	}
 
 	// 3. Stats API via Bearer header

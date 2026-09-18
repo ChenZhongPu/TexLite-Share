@@ -70,22 +70,41 @@ func (h *AdminHandler) checkAuth(r *http.Request) bool {
 		return true
 	}
 
+	// 3. Check Cookie (if set by browser dashboard)
+	if cookie, err := r.Cookie("texlite_admin_key"); err == nil && cookie.Value == h.cfg.CreateAPIKey {
+		return true
+	}
+
 	return false
 }
 
 // ServeHTTP handles requests arriving at the dedicated admin port.
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+
+	// 1. Always serve the dashboard HTML on root/admin routes
+	if path == "/" || path == "/admin" {
+		if key := r.URL.Query().Get("key"); key != "" && key == h.cfg.CreateAPIKey {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "texlite_admin_key",
+				Value:    key,
+				Path:     "/",
+				HttpOnly: false,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+		h.handleDashboard(w, r)
+		return
+	}
+
+	// 2. Protect all API endpoints with admin authentication
 	if !h.checkAuth(r) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="TexLite Share Admin"`)
 		http.Error(w, "Unauthorized: invalid or missing admin API key", http.StatusUnauthorized)
 		return
 	}
 
-	path := r.URL.Path
-
 	switch {
-	case path == "/" || path == "/admin":
-		h.handleDashboard(w, r)
 	case path == "/api/v1/stats" && r.Method == http.MethodGet:
 		h.handleStats(w, r)
 	case path == "/api/v1/shares" && r.Method == http.MethodGet:
@@ -290,16 +309,47 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 
   <script>
+    function getAdminKey() {
+      const urlKey = new URLSearchParams(window.location.search).get('key');
+      if (urlKey) {
+        localStorage.setItem('texlite_admin_key', urlKey);
+        return urlKey;
+      }
+      return localStorage.getItem('texlite_admin_key') || '';
+    }
+
+    async function apiFetch(url, options) {
+      options = options || {};
+      options.headers = options.headers || {};
+      const key = getAdminKey();
+      if (key && !options.headers['Authorization']) {
+        options.headers['Authorization'] = 'Bearer ' + key;
+      }
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        const inputKey = prompt('Please enter your admin API key:');
+        if (inputKey) {
+          localStorage.setItem('texlite_admin_key', inputKey);
+          document.cookie = 'texlite_admin_key=' + inputKey + '; path=/; SameSite=Lax';
+          options.headers['Authorization'] = 'Bearer ' + inputKey;
+          return await fetch(url, options);
+        }
+      }
+      return res;
+    }
+
     async function refreshData() {
       try {
-        const statsRes = await fetch('/api/v1/stats');
+        const statsRes = await apiFetch('/api/v1/stats');
+        if (!statsRes.ok) return;
         const stats = await statsRes.json();
         document.getElementById('quota-val').textContent = stats.activeShares + ' / ' + stats.maxActiveShares;
         document.getElementById('tunnels-val').textContent = stats.onlineTunnels;
         document.getElementById('streams-val').textContent = stats.totalStreams;
         document.getElementById('domain-val').textContent = stats.baseDomain;
 
-        const sharesRes = await fetch('/api/v1/shares');
+        const sharesRes = await apiFetch('/api/v1/shares');
+        if (!sharesRes.ok) return;
         const shares = await sharesRes.json();
         const tbody = document.getElementById('shares-tbody');
         tbody.innerHTML = '';
@@ -337,7 +387,7 @@ const dashboardHTML = `<!DOCTYPE html>
     async function createShare() {
       const ttl = document.getElementById('ttl-select').value;
       try {
-        const res = await fetch('/api/v1/shares', {
+        const res = await apiFetch('/api/v1/shares', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ttl: ttl })
@@ -364,7 +414,7 @@ const dashboardHTML = `<!DOCTYPE html>
     async function revokeShare(id) {
       if (!confirm('Are you sure you want to revoke share ' + id + '? This will immediately terminate the tunnel.')) return;
       try {
-        const res = await fetch('/api/v1/shares/' + id, { method: 'DELETE' });
+        const res = await apiFetch('/api/v1/shares/' + id, { method: 'DELETE' });
         if (!res.ok) alert('Failed to revoke: ' + (await res.text()));
         refreshData();
       } catch (e) {
@@ -375,5 +425,6 @@ const dashboardHTML = `<!DOCTYPE html>
     refreshData();
     setInterval(refreshData, 5000);
   </script>
+
 </body>
 </html>`
