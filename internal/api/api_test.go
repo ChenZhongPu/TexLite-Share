@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -119,6 +120,29 @@ func TestCreateAndRevokeShare(t *testing.T) {
 	}
 
 	_ = reg
+}
+
+func TestCreateShare_CustomTTL(t *testing.T) {
+	router, _, _ := setupTestRouter(t, "", 50)
+
+	body := `{"ttl": "2h"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	var resp api.CreateShareResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	diff := time.Until(resp.ExpiresAt)
+	if diff < 1*time.Hour+50*time.Minute || diff > 2*time.Hour+1*time.Minute {
+		t.Fatalf("expected TTL around 2h, got diff: %v", diff)
+	}
 }
 
 func TestCapacityExceeded(t *testing.T) {

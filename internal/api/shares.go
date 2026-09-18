@@ -33,6 +33,12 @@ func NewServerAPI(cfg *config.ServerConfig, db *database.DB, reg *registry.Regis
 	}
 }
 
+// CreateShareRequest represents the optional JSON body for creating a share.
+type CreateShareRequest struct {
+	TTL        string `json:"ttl,omitempty"`        // e.g. "2h", "30m"
+	TTLSeconds int64  `json:"ttlSeconds,omitempty"` // e.g. 7200
+}
+
 // CreateShareResponse represents the response payload for a created share.
 type CreateShareResponse struct {
 	ID        string    `json:"id"`
@@ -56,6 +62,24 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
+	}
+
+	// Optional request body parsing for custom TTL
+	ttl := a.cfg.DefaultTTL
+	if r.Body != nil && r.ContentLength > 0 {
+		var req CreateShareRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+			if req.TTL != "" {
+				if d, err := time.ParseDuration(req.TTL); err == nil && d > 0 {
+					ttl = d
+				}
+			} else if req.TTLSeconds > 0 {
+				ttl = time.Duration(req.TTLSeconds) * time.Second
+			}
+		}
+	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
 	}
 
 	now := time.Now().UTC()
@@ -89,10 +113,6 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenHash := auth.HashToken(token)
-	ttl := a.cfg.DefaultTTL
-	if ttl <= 0 {
-		ttl = 24 * time.Hour
-	}
 	expiresAt := now.Add(ttl)
 
 	share := &database.Share{

@@ -30,6 +30,7 @@ func main() {
 	flag.IntVar(&cfg.MaxStreamsPerShare, "max-streams-per-share", cfg.MaxStreamsPerShare, "Maximum concurrent streams allowed per share")
 	flag.IntVar(&cfg.MaxTotalStreams, "max-total-streams", cfg.MaxTotalStreams, "Maximum total concurrent streams across all shares")
 	flag.DurationVar(&cfg.SweepInterval, "sweep-interval", cfg.SweepInterval, "Interval for background expiration sweep")
+	flag.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default time-to-live for created shares (e.g. 24h, 2h)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
