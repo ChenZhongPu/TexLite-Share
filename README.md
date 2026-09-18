@@ -156,7 +156,45 @@ Example JSON response:
 }
 ```
 
-### 5. Start Tunnel Client:
+### 4. Simplified Usage: One-Command Auto-Share (Recommended)
+
+When TexLite is running locally (e.g. `127.0.0.1:3000`), the client can automatically create a share, establish the tunnel, and clean up upon exit with a single command without needing manual flags:
+
+```bash
+# Set your server URL (or leave default http://127.0.0.1:9000 for local dev)
+export TEXLITE_SERVER_URL=https://share.example.com
+export TEXLITE_SHARE_API_KEY=your-secret-key   # Optional if server requires API key
+
+# Run client (auto-probes TexLite, creates share, connects, revokes on Ctrl+C)
+./bin/texlite-tunnel-client
+```
+
+Terminal output:
+```text
+============================================================
+           TexLite Share Tunnel is LIVE!
+============================================================
+  Share ID:    k83fx2m7pq4z7abc
+  Public URL:  https://k83fx2m7pq4z7abc.share.example.com
+  Expires:     2026-09-19T10:00:00Z
+  Target:      127.0.0.1:3000
+============================================================
+Share link copied to clipboard. Press Ctrl+C to stop sharing.
+```
+
+**Features built into the client:**
+- **Pre-flight Probe**: Checks if local TexLite (`127.0.0.1:3000`) is responsive before contacting the server. If TexLite is offline, it exits immediately with an actionable warning.
+- **Auto-Revocation**: When you terminate the client (Ctrl+C / SIGINT / SIGTERM), it automatically calls the server to revoke the share immediately so the link expires at once.
+- **Environment Variables**:
+  - `TEXLITE_SERVER_URL`: Server address (default: `http://127.0.0.1:9000`)
+  - `TEXLITE_LOCAL_ADDR`: Local service address (default: `127.0.0.1:3000`)
+  - `TEXLITE_SHARE_API_KEY`: API Bearer token for server (if needed)
+  - `TEXLITE_SHARE_TTL`: Share lifetime (default: `24h`)
+
+---
+
+### 5. Manual / Advanced Tunnel Client Usage:
+If you want to manually connect to a pre-created share ID:
 ```bash
 go run ./cmd/texlite-tunnel-client \
     --server-url http://127.0.0.1:9000 \
@@ -175,6 +213,7 @@ For browser testing locally, simply add the hostname to `/etc/hosts`:
 127.0.0.1 k83fx2m7pq4z7abc.share.local
 ```
 Then navigate to `http://k83fx2m7pq4z7abc.share.local:9000` in any web browser.
+
 
 ---
 
