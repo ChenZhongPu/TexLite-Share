@@ -1,0 +1,206 @@
+# TexLite Share Tunnel
+
+A specialized, secure reverse-tunnel system engineered exclusively for **TexLite Share** (serving [TexLite](https://github.com/SWUFE-DB-Group/TexLite)).
+
+TexLite Share enables users to instantly expose their local TexLite instance (e.g. running at `127.0.0.1:3000`) to collaborators via a public URL (e.g. `https://k83fx2m7pq4z7abc.share.example.com`), completely eliminating router port forwarding, public IP requirements, manual DNS/HTTPS setups, and third-party tools like frp or rathole.
+
+---
+
+## 1. High-Level Architecture
+
+```text
+                                Internet
+                                   │
+                                   │ HTTPS :443
+                                   ▼
+                    k83fx2.share.example.com
+                                   │
+                              wildcard DNS
+                                   │
+                                   ▼
+                                 Caddy
+                            TLS termination
+                                   │
+                                   │ HTTP / WebSocket
+                                   ▼
+                       texlite-share-server
+                          127.0.0.1:9000
+                           /            \
+                          /              \
+                 browser requests       tunnel connection
+                        │                      ▲
+                        │                      │
+                        │               WebSocket + smux
+                        │                      │
+                        ▼                      │
+                   active session ─────────────┘
+                                               │
+                                               ▼
+                                   texlite-tunnel-client
+                                               │
+                                               ▼
+                                      127.0.0.1:3000
+                                               │
+                                               ▼
+                                            TexLite
+```
+
+### Key Technical Properties:
+- **WebSocket Transport (`github.com/coder/websocket`)**: Normal browser traffic and tunnel-client connections both operate on standard HTTP/HTTPS ports (e.g. 443 via Caddy). No special tunnel TCP ports required.
+- **Multiplexing (`github.com/xtaci/smux` v2)**: A single persistent WebSocket connection handles arbitrary concurrent HTTP requests, large file downloads (PDFs), and TexLite WebSockets over lightweight logical streams.
+- **CGO-Free Pure Go SQLite (`modernc.org/sqlite`)**: Cross-compiles out of the box for Linux, macOS, and Windows.
+- **Loopback Safety**: The client strictly validates local destination addresses and only allows loopback addresses (`127.0.0.1`, `localhost`, `[::1]`). The server cannot command the client to dial arbitrary internal IPs.
+- **Cryptographic Security**: Tokens are generated via `crypto/rand` (256-bit), stored only as SHA-256 hashes, and verified in constant time. Share IDs are 80-bit random Base32 identifiers.
+- **Session Replacement & Recovery**: Reconnection automatically replaces older sessions using generation counters, seamlessly surviving network interruptions and server restarts.
+
+---
+
+## 2. Directory Structure
+
+```text
+texlite-share/
+├── cmd/
+│   ├── texlite-share-server/     # Share server entrypoint
+│   │   └── main.go
+│   └── texlite-tunnel-client/    # Tunnel client entrypoint
+│       └── main.go
+│
+├── internal/
+│   ├── api/                      # Control API (create/revoke), Tunnel WS endpoint, Router
+│   ├── auth/                     # Token generation, SHA-256 hashing, constant-time compare
+│   ├── config/                   # Server/client configuration, loopback validation
+│   ├── database/                 # SQLite persistence, WAL mode, queries, migrations
+│   ├── protocol/                 # Protocol constants, ShareID generator/validator, typed errors
+│   ├── proxy/                    # Subdomain Host routing, ReverseProxy with smux Transport
+│   ├── registry/                 # Thread-safe in-memory session registry with generation tracking
+│   ├── tunnel/                   # Stream bridge, smux config, client runner & backoff
+│   └── logging/                  # Structured logging (slog) with credential safety
+│
+├── migrations/                   # SQLite schema definitions
+├── integration/                  # Automated integration tests (8 end-to-end scenarios)
+├── go.mod
+└── go.sum
+```
+
+---
+
+## 3. Building the Binaries
+
+### Standard Build:
+```bash
+# Build server
+go build -o bin/texlite-share-server ./cmd/texlite-share-server
+
+# Build client
+go build -o bin/texlite-tunnel-client ./cmd/texlite-tunnel-client
+```
+
+### Cross-Compilation (CGO-Free):
+```bash
+# Linux (amd64 / arm64)
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/texlite-tunnel-client-linux-amd64 ./cmd/texlite-tunnel-client
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o bin/texlite-tunnel-client-linux-arm64 ./cmd/texlite-tunnel-client
+
+# macOS (Intel / Apple Silicon)
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o bin/texlite-tunnel-client-darwin-amd64 ./cmd/texlite-tunnel-client
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o bin/texlite-tunnel-client-darwin-arm64 ./cmd/texlite-tunnel-client
+
+# Windows (amd64)
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o bin/texlite-tunnel-client-windows-amd64.exe ./cmd/texlite-tunnel-client
+```
+
+---
+
+## 4. Local Development Walkthrough (No Domain / DNS Required)
+
+### 1. Start Local TexLite (or a test server):
+```bash
+python3 -m http.server 3000 --bind 127.0.0.1
+```
+
+### 2. Start Share Server:
+```bash
+go run ./cmd/texlite-share-server \
+    --listen 127.0.0.1:9000 \
+    --base-domain share.local \
+    --db /tmp/texlite-share.db \
+    --create-api-key dev-secret
+```
+
+### 3. Create a Share:
+```bash
+curl -X POST \
+  -H 'Authorization: Bearer dev-secret' \
+  http://127.0.0.1:9000/api/v1/shares
+```
+
+Example JSON response:
+```json
+{
+  "id": "k83fx2m7pq4z7abc",
+  "token": "4vQyW1...",
+  "expiresAt": "2026-09-19T10:00:00Z",
+  "publicUrl": "http://k83fx2m7pq4z7abc.share.local"
+}
+```
+
+### 4. Start Tunnel Client:
+```bash
+go run ./cmd/texlite-tunnel-client \
+    --server-url http://127.0.0.1:9000 \
+    --share-id k83fx2m7pq4z7abc \
+    --token 4vQyW1... \
+    --local-addr 127.0.0.1:3000
+```
+
+### 5. Access via Public Host:
+```bash
+curl -H 'Host: k83fx2m7pq4z7abc.share.local' http://127.0.0.1:9000/
+```
+
+For browser testing locally, simply add the hostname to `/etc/hosts`:
+```text
+127.0.0.1 k83fx2m7pq4z7abc.share.local
+```
+Then navigate to `http://k83fx2m7pq4z7abc.share.local:9000` in any web browser.
+
+---
+
+## 5. Production Deployment with Caddy
+
+### DNS Configuration:
+Point wildcard DNS to your server IP:
+```dns
+share.example.com      A    SERVER_IP
+*.share.example.com    A    SERVER_IP
+```
+
+### Caddyfile:
+```caddy
+share.example.com, *.share.example.com {
+    tls {
+        dns cloudflare {env.CF_API_TOKEN}
+    }
+
+    reverse_proxy 127.0.0.1:9000
+}
+```
+
+Caddy handles automatic wildcard TLS termination and reverse-proxies all control APIs, tunnel WebSocket connections, and public subdomain traffic directly to `texlite-share-server`. Creating new shares requires zero Caddy reloads, zero DNS changes, and zero cert renewals.
+
+---
+
+## 6. Testing & Quality Assurance
+
+Run all unit tests and integration tests with the Go race detector:
+
+```bash
+# Run unit tests
+go test -v -race ./internal/...
+
+# Run end-to-end integration tests
+go test -v -race ./integration/...
+
+# Run all tests in the repository
+go test -v -race ./...
+```
