@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -103,9 +104,20 @@ func ProactivelyRevokePreviousShare(ctx context.Context, statePath string, defau
 		return state, nil
 	}
 
-	targetServerURL := state.ServerURL
+	// If the previous share was created on a different server, it does not occupy quota on currentServerURL.
+	if state.ServerURL != "" && strings.TrimRight(state.ServerURL, "/") != strings.TrimRight(defaultServerURL, "/") {
+		slog.Debug("previous share was created on a different server, skipping remote revocation",
+			"prev_server", state.ServerURL,
+			"current_server", defaultServerURL,
+		)
+		state.Revoked = true
+		_ = SaveLastShareState(statePath, state)
+		return state, nil
+	}
+
+	targetServerURL := defaultServerURL
 	if targetServerURL == "" {
-		targetServerURL = defaultServerURL
+		targetServerURL = state.ServerURL
 	}
 
 	revokeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
