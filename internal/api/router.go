@@ -59,20 +59,33 @@ func (pr *publicRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Tunnel endpoint
+	// 2. Client Share Creation (POST /api/v1/shares) - protected by rate limiting, per-IP quota, and api key
+	if path == "/api/v1/shares" && r.Method == http.MethodPost {
+		pr.api.HandleCreateShare(w, r)
+		return
+	}
+
+	// 3. Client Share Revocation (DELETE /api/v1/shares/{id}) - authenticated by share token
+	if strings.HasPrefix(path, "/api/v1/shares/") && r.Method == http.MethodDelete {
+		shareID := strings.TrimPrefix(path, "/api/v1/shares/")
+		pr.api.HandleRevokeShare(w, r, shareID)
+		return
+	}
+
+	// 4. Tunnel endpoint
 	if strings.HasPrefix(path, "/api/v1/tunnel/") {
 		shareID := strings.TrimPrefix(path, "/api/v1/tunnel/")
 		pr.api.HandleTunnelWS(w, r, shareID)
 		return
 	}
 
-	// 3. Public subdomain proxy routing
+	// 5. Public subdomain proxy routing
 	if _, err := proxy.ExtractShareID(r.Host, pr.cfg.BaseDomain); err == nil {
 		pr.proxyHandler.ServeHTTP(w, r)
 		return
 	}
 
-	// 4. Everything else (including /api/v1/shares) is rejected on public port
+	// 6. Everything else (e.g. GET /api/v1/shares, /api/v1/stats, dashboard) is rejected on public port
 	http.Error(w, "Not Found", http.StatusNotFound)
 }
 

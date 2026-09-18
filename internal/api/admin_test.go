@@ -112,12 +112,21 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 		t.Fatal("expected share to show Online=true")
 	}
 
-	// 6. Verify that the PUBLIC router rejects /api/v1/shares with 404 (Physical isolation)
-	pubReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
-	pubRec := httptest.NewRecorder()
-	publicHandler.ServeHTTP(pubRec, pubReq)
-	if pubRec.Code != http.StatusNotFound {
-		t.Fatalf("expected public router to return 404 for /api/v1/shares, got %d", pubRec.Code)
+	// 6. Verify that the PUBLIC router rejects admin-only APIs with 404 (Physical isolation)
+	// Admin listing of all shares should be rejected on public router
+	pubListReq := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
+	pubListRec := httptest.NewRecorder()
+	publicHandler.ServeHTTP(pubListRec, pubListReq)
+	if pubListRec.Code != http.StatusNotFound {
+		t.Fatalf("expected public router to return 404 for GET /api/v1/shares, got %d", pubListRec.Code)
+	}
+
+	// Admin stats should be rejected on public router
+	pubStatsReq := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	pubStatsRec := httptest.NewRecorder()
+	publicHandler.ServeHTTP(pubStatsRec, pubStatsReq)
+	if pubStatsRec.Code != http.StatusNotFound {
+		t.Fatalf("expected public router to return 404 for /api/v1/stats, got %d", pubStatsRec.Code)
 	}
 
 	_ = db
