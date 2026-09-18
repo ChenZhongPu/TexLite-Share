@@ -22,7 +22,8 @@ import (
 func main() {
 	cfg := config.DefaultServerConfig()
 
-	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "Address for the server to listen on")
+	flag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "Address for the public server to listen on (for tunnels and visitors)")
+	flag.StringVar(&cfg.AdminListenAddr, "admin-listen", cfg.AdminListenAddr, "Address for dedicated admin management port (default: 127.0.0.1:9001, empty to disable)")
 	flag.StringVar(&cfg.BaseDomain, "base-domain", cfg.BaseDomain, "Base domain for public shares (e.g., share.local or share.example.com)")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "Path to SQLite database file")
 	flag.StringVar(&cfg.CreateAPIKey, "create-api-key", cfg.CreateAPIKey, "Secret key to protect share creation (optional in dev mode)")
@@ -40,6 +41,7 @@ func main() {
 
 	slog.Info("starting texlite-share-server",
 		"listen", cfg.ListenAddr,
+		"admin_listen", cfg.AdminListenAddr,
 		"base_domain", cfg.BaseDomain,
 		"db", cfg.DBPath,
 		"max_shares", cfg.MaxActiveShares,
@@ -56,33 +58,56 @@ func main() {
 	// 2. Initialize in-memory tunnel registry
 	reg := registry.NewRegistry()
 
-	// 3. Initialize HTTP router
-	router := api.NewRouter(cfg, db, reg)
-
-	// 4. Start background expiration worker
+	// 3. Start background expiration worker
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	api.StartExpirationWorker(ctx, db, reg, cfg.SweepInterval)
 
-	// 5. Configure HTTP server
+	// 4. Configure Public HTTP Server
+	var publicHandler http.Handler
+	if cfg.AdminListenAddr != "" {
+		publicHandler = api.NewPublicRouter(cfg, db, reg)
+	} else {
+		publicHandler = api.NewRouter(cfg, db, reg)
+	}
+
 	httpServer := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           router,
+		Handler:           publicHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+
+	serverErrCh := make(chan error, 2)
+	go func() {
+		slog.Info(fmt.Sprintf("public server listening on http://%s (tunnels & visitors)", cfg.ListenAddr))
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serverErrCh <- fmt.Errorf("public server error: %w", err)
+		}
+	}()
+
+	// 5. Configure Dedicated Admin Server (if enabled)
+	var adminServer *http.Server
+	if cfg.AdminListenAddr != "" {
+		adminHandler := api.NewAdminHandler(cfg, db, reg)
+		adminServer = &http.Server{
+			Addr:              cfg.AdminListenAddr,
+			Handler:           adminHandler,
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+		}
+
+		go func() {
+			slog.Info(fmt.Sprintf("admin management port listening on http://%s (localhost only, Web Dashboard available)", cfg.AdminListenAddr))
+			if err := adminServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				serverErrCh <- fmt.Errorf("admin server error: %w", err)
+			}
+		}()
 	}
 
 	// 6. Channel for interrupt signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-	serverErrCh := make(chan error, 1)
-	go func() {
-		slog.Info(fmt.Sprintf("server listening on http://%s", cfg.ListenAddr))
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serverErrCh <- err
-		}
-	}()
 
 	// Wait for shutdown signal or fatal server error
 	select {
@@ -93,15 +118,21 @@ func main() {
 		slog.Info("received shutdown signal", "signal", sig.String())
 	}
 
-	// Graceful shutdown sequence (Section 42)
-	slog.Info("shutting down server...")
+	// Graceful shutdown sequence
+	slog.Info("shutting down servers...")
 	cancel() // stop expiration worker
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("server shutdown error", "error", err)
+		slog.Error("public server shutdown error", "error", err)
+	}
+
+	if adminServer != nil {
+		if err := adminServer.Shutdown(shutdownCtx); err != nil {
+			slog.Error("admin server shutdown error", "error", err)
+		}
 	}
 
 	// Close all active tunnel sessions
@@ -110,3 +141,4 @@ func main() {
 
 	slog.Info("texlite-share-server stopped cleanly")
 }
+

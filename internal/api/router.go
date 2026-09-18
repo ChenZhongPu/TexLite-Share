@@ -22,13 +22,58 @@ type Router struct {
 	proxyHandler *proxy.ProxyHandler
 }
 
-// NewRouter creates an unified HTTP Handler for texlite-share-server.
+// NewRouter creates a unified HTTP Handler for texlite-share-server.
 func NewRouter(cfg *config.ServerConfig, db *database.DB, reg *registry.Registry) *Router {
 	return &Router{
 		cfg:          cfg,
 		api:          NewServerAPI(cfg, db, reg),
 		proxyHandler: proxy.NewProxyHandler(cfg, db, reg),
 	}
+}
+
+// NewPublicRouter creates an HTTP handler for the public-facing port when a dedicated
+// admin port is configured. It only exposes tunnel connections, health checks, and subdomain proxying,
+// completely isolating management APIs from the public network.
+func NewPublicRouter(cfg *config.ServerConfig, db *database.DB, reg *registry.Registry) http.Handler {
+	return &publicRouter{
+		cfg:          cfg,
+		api:          NewServerAPI(cfg, db, reg),
+		proxyHandler: proxy.NewProxyHandler(cfg, db, reg),
+	}
+}
+
+type publicRouter struct {
+	cfg          *config.ServerConfig
+	api          *ServerAPI
+	proxyHandler *proxy.ProxyHandler
+}
+
+func (pr *publicRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+
+	// 1. Health check
+	if path == "/healthz" || path == "/api/v1/health" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+		return
+	}
+
+	// 2. Tunnel endpoint
+	if strings.HasPrefix(path, "/api/v1/tunnel/") {
+		shareID := strings.TrimPrefix(path, "/api/v1/tunnel/")
+		pr.api.HandleTunnelWS(w, r, shareID)
+		return
+	}
+
+	// 3. Public subdomain proxy routing
+	if _, err := proxy.ExtractShareID(r.Host, pr.cfg.BaseDomain); err == nil {
+		pr.proxyHandler.ServeHTTP(w, r)
+		return
+	}
+
+	// 4. Everything else (including /api/v1/shares) is rejected on public port
+	http.Error(w, "Not Found", http.StatusNotFound)
 }
 
 // ServeHTTP inspects the incoming request URL path and Host header to dispatch appropriately.

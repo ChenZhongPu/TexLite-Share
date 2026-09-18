@@ -2,6 +2,7 @@ package database_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -192,5 +193,36 @@ func TestExpireShares(t *testing.T) {
 	got2, _ := db.GetShare(ctx, s2.ID)
 	if got2.Status != database.StatusActive {
 		t.Fatalf("expected s2 status %q, got %q", database.StatusActive, got2.Status)
+	}
+}
+
+func TestListShares(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	for i := 0; i < 5; i++ {
+		s := &database.Share{
+			ID:        fmt.Sprintf("share_%d_test123", i),
+			TokenHash: []byte("01234567890123456789012345678901"),
+			Status:    database.StatusActive,
+			CreatedAt: now.Add(time.Duration(i) * time.Minute),
+			ExpiresAt: now.Add(time.Hour),
+		}
+		if err := db.CreateShare(ctx, s); err != nil {
+			t.Fatalf("CreateShare %d failed: %v", i, err)
+		}
+	}
+
+	list, err := db.ListShares(ctx, 3)
+	if err != nil {
+		t.Fatalf("ListShares failed: %v", err)
+	}
+	if len(list) != 3 {
+		t.Fatalf("expected 3 shares, got %d", len(list))
+	}
+	// Should be descending by created_at
+	if list[0].ID != "share_4_test123" {
+		t.Fatalf("expected first item to be share_4_test123, got %q", list[0].ID)
 	}
 }

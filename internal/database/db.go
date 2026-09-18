@@ -239,3 +239,42 @@ func (d *DB) ExpireShares(ctx context.Context, now time.Time) ([]string, error) 
 	}
 	return expiredIDs, nil
 }
+
+// ListShares retrieves shares ordered by creation time descending.
+func (d *DB) ListShares(ctx context.Context, limit int) ([]*Share, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	query := `
+	SELECT id, token_hash, status, created_at, expires_at, revoked_at
+	FROM shares
+	ORDER BY created_at DESC
+	LIMIT ?;
+	`
+	rows, err := d.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query shares: %w", err)
+	}
+	defer rows.Close()
+
+	var shares []*Share
+	for rows.Next() {
+		var (
+			s             Share
+			createdUnix   int64
+			expiresUnix   int64
+			revokedAtUnix sql.NullInt64
+		)
+		if err := rows.Scan(&s.ID, &s.TokenHash, &s.Status, &createdUnix, &expiresUnix, &revokedAtUnix); err != nil {
+			return nil, fmt.Errorf("failed to scan share: %w", err)
+		}
+		s.CreatedAt = time.Unix(createdUnix, 0).UTC()
+		s.ExpiresAt = time.Unix(expiresUnix, 0).UTC()
+		if revokedAtUnix.Valid {
+			t := time.Unix(revokedAtUnix.Int64, 0).UTC()
+			s.RevokedAt = &t
+		}
+		shares = append(shares, &s)
+	}
+	return shares, rows.Err()
+}

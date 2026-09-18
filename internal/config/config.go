@@ -13,6 +13,7 @@ import (
 // ServerConfig holds the configuration for texlite-share-server.
 type ServerConfig struct {
 	ListenAddr         string
+	AdminListenAddr    string
 	BaseDomain         string
 	DBPath             string
 	CreateAPIKey       string
@@ -28,6 +29,7 @@ type ServerConfig struct {
 func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		ListenAddr:         "127.0.0.1:9000",
+		AdminListenAddr:    "127.0.0.1:9001",
 		BaseDomain:         "share.local",
 		DBPath:             "texlite-share.db",
 		CreateAPIKey:       "",
