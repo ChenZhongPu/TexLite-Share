@@ -122,16 +122,28 @@ python3 -m http.server 3000 --bind 127.0.0.1
 ```bash
 go run ./cmd/texlite-share-server \
     --listen 127.0.0.1:9000 \
+    --admin-listen 127.0.0.1:9001 \
     --base-domain share.local \
     --db /tmp/texlite-share.db \
     --create-api-key dev-secret
 ```
 
-### 3. Create a Share:
+- Public Port (`:9000`): Only handles visitor subdomain traffic and tunnel WebSocket connections.
+- Admin Port (`:9001`): Dedicated localhost port serving the Web Dashboard and management APIs.
+
+### 3. Manage via Web Dashboard (or SSH Tunnel):
+Open `http://127.0.0.1:9001/?key=dev-secret` in your browser!
+If the server is on a remote VPS, forward the port via SSH:
+```bash
+ssh -L 9001:127.0.0.1:9001 user@your-server-ip
+```
+Then visit `http://localhost:9001/?key=dev-secret` on your local laptop to view the graphical dashboard, monitor active shares/tunnels, and create/revoke shares with one click.
+
+### 4. Or Create a Share via curl:
 ```bash
 curl -X POST \
   -H 'Authorization: Bearer dev-secret' \
-  http://127.0.0.1:9000/api/v1/shares
+  http://127.0.0.1:9001/api/v1/shares
 ```
 
 Example JSON response:
@@ -144,7 +156,7 @@ Example JSON response:
 }
 ```
 
-### 4. Start Tunnel Client:
+### 5. Start Tunnel Client:
 ```bash
 go run ./cmd/texlite-tunnel-client \
     --server-url http://127.0.0.1:9000 \
@@ -153,7 +165,7 @@ go run ./cmd/texlite-tunnel-client \
     --local-addr 127.0.0.1:3000
 ```
 
-### 5. Access via Public Host:
+### 6. Access via Public Host:
 ```bash
 curl -H 'Host: k83fx2m7pq4z7abc.share.local' http://127.0.0.1:9000/
 ```
