@@ -215,3 +215,80 @@ func TestExpirationWorker(t *testing.T) {
 		t.Fatalf("expected status EXPIRED in DB, got %q", s.Status)
 	}
 }
+
+func TestRateLimitPerIP(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := database.Open(filepath.Join(dir, "test.db"))
+	defer db.Close()
+
+	cfg := config.DefaultServerConfig()
+	cfg.RateLimitPerMin = 2
+	reg := registry.NewRegistry()
+	router := api.NewRouter(cfg, db, reg)
+
+	// 1st request from IP
+	r1 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r1.RemoteAddr = "203.0.113.1:1234"
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, r1)
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w1.Code)
+	}
+
+	// 2nd request from same IP
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r2.RemoteAddr = "203.0.113.1:1234"
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w2.Code)
+	}
+
+	// 3rd request from same IP -> 429 Too Many Requests
+	r3 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r3.RemoteAddr = "203.0.113.1:1234"
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, r3)
+	if w3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests, got %d", w3.Code)
+	}
+}
+
+func TestMaxSharesPerIP(t *testing.T) {
+	dir := t.TempDir()
+	db, _ := database.Open(filepath.Join(dir, "test.db"))
+	defer db.Close()
+
+	cfg := config.DefaultServerConfig()
+	cfg.RateLimitPerMin = 100 // disable rate limit to test quota
+	cfg.MaxSharesPerIP = 2
+	reg := registry.NewRegistry()
+	router := api.NewRouter(cfg, db, reg)
+
+	// Create 1
+	r1 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r1.RemoteAddr = "203.0.113.2:1234"
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, r1)
+	if w1.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w1.Code)
+	}
+
+	// Create 2
+	r2 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r2.RemoteAddr = "203.0.113.2:1234"
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, r2)
+	if w2.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", w2.Code)
+	}
+
+	// Create 3 -> 429 Max shares per IP reached
+	r3 := httptest.NewRequest(http.MethodPost, "/api/v1/shares", nil)
+	r3.RemoteAddr = "203.0.113.2:1234"
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, r3)
+	if w3.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 Too Many Requests for per-IP limit, got %d", w3.Code)
+	}
+}

@@ -22,14 +22,20 @@ type ServerAPI struct {
 	cfg      *config.ServerConfig
 	db       *database.DB
 	registry *registry.Registry
+	limiter  *IPRateLimiter
 }
 
 // NewServerAPI initializes a new ServerAPI.
 func NewServerAPI(cfg *config.ServerConfig, db *database.DB, reg *registry.Registry) *ServerAPI {
+	rateLimit := cfg.RateLimitPerMin
+	if rateLimit <= 0 {
+		rateLimit = 5
+	}
 	return &ServerAPI{
 		cfg:      cfg,
 		db:       db,
 		registry: reg,
+		limiter:  NewIPRateLimiter(rateLimit, 1*time.Minute),
 	}
 }
 
@@ -54,7 +60,16 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify creation auth (API key)
+	clientIP := ExtractClientIP(r)
+
+	// 1. IP rate limiting (frequency check)
+	if a.limiter != nil && !a.limiter.Allow(clientIP) {
+		slog.Warn("client share creation rate limit exceeded", "client_ip", clientIP)
+		http.Error(w, "Too Many Requests: share creation rate limit exceeded. Please wait a moment.", http.StatusTooManyRequests)
+		return
+	}
+
+	// 2. Verify creation auth (API key)
 	if a.cfg.CreateAPIKey != "" {
 		token, err := auth.ExtractBearerToken(r)
 		if err != nil || token != a.cfg.CreateAPIKey {
@@ -64,7 +79,7 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Optional request body parsing for custom TTL
+	// 3. Optional request body parsing for custom TTL
 	ttl := a.cfg.DefaultTTL
 	if r.Body != nil && r.ContentLength > 0 {
 		var req CreateShareRequest
@@ -84,7 +99,22 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now().UTC()
 
-	// Check logical capacity limit
+	// 4. Per-IP active share quota check
+	if a.cfg.MaxSharesPerIP > 0 {
+		ipActiveCount, err := a.db.CountActiveSharesByIP(r.Context(), clientIP, now)
+		if err != nil {
+			slog.Error("failed to count active shares by IP", "client_ip", clientIP, "error", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		if ipActiveCount >= a.cfg.MaxSharesPerIP {
+			slog.Warn("client exceeded maximum active shares per IP", "client_ip", clientIP, "active", ipActiveCount, "max", a.cfg.MaxSharesPerIP)
+			http.Error(w, "Too Many Requests: maximum active shares reached for your IP", http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	// 5. Global server capacity check
 	activeCount, err := a.db.CountActiveShares(r.Context(), now)
 	if err != nil {
 		slog.Error("failed to count active shares", "error", err)
@@ -121,6 +151,7 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		Status:    database.StatusActive,
 		CreatedAt: now,
 		ExpiresAt: expiresAt,
+		ClientIP:  clientIP,
 	}
 
 	if err := a.db.CreateShare(r.Context(), share); err != nil {

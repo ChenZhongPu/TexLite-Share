@@ -27,6 +27,7 @@ type Share struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	RevokedAt *time.Time
+	ClientIP  string
 }
 
 // DB wraps the SQL database handle and provides share-specific persistence methods.
@@ -69,7 +70,8 @@ func (d *DB) migrate() error {
 		status TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
-		revoked_at INTEGER
+		revoked_at INTEGER,
+		client_ip TEXT
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_shares_status
@@ -77,9 +79,15 @@ func (d *DB) migrate() error {
 
 	CREATE INDEX IF NOT EXISTS idx_shares_expires_at
 	ON shares(expires_at);
+
+	CREATE INDEX IF NOT EXISTS idx_shares_client_ip
+	ON shares(client_ip);
 	`
-	_, err := d.db.Exec(schema)
-	return err
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`ALTER TABLE shares ADD COLUMN client_ip TEXT;`)
+	return nil
 }
 
 // Close closes the underlying SQLite database connection.
@@ -90,8 +98,8 @@ func (d *DB) Close() error {
 // CreateShare stores a new share record in the database.
 func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 	query := `
-	INSERT INTO shares (id, token_hash, status, created_at, expires_at, revoked_at)
-	VALUES (?, ?, ?, ?, ?, ?);
+	INSERT INTO shares (id, token_hash, status, created_at, expires_at, revoked_at, client_ip)
+	VALUES (?, ?, ?, ?, ?, ?, ?);
 	`
 	var revokedAtUnix sql.NullInt64
 	if share.RevokedAt != nil {
@@ -105,6 +113,7 @@ func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 		share.CreatedAt.Unix(),
 		share.ExpiresAt.Unix(),
 		revokedAtUnix,
+		share.ClientIP,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert share: %w", err)
@@ -115,7 +124,7 @@ func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 // GetShare retrieves a share by its ID.
 func (d *DB) GetShare(ctx context.Context, id string) (*Share, error) {
 	query := `
-	SELECT id, token_hash, status, created_at, expires_at, revoked_at
+	SELECT id, token_hash, status, created_at, expires_at, revoked_at, COALESCE(client_ip, '')
 	FROM shares
 	WHERE id = ?;
 	`
@@ -133,6 +142,7 @@ func (d *DB) GetShare(ctx context.Context, id string) (*Share, error) {
 		&createdUnix,
 		&expiresUnix,
 		&revokedAtUnix,
+		&s.ClientIP,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -161,6 +171,24 @@ func (d *DB) CountActiveShares(ctx context.Context, now time.Time) (int, error) 
 	err := d.db.QueryRowContext(ctx, query, StatusActive, now.Unix()).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count active shares: %w", err)
+	}
+	return count, nil
+}
+
+// CountActiveSharesByIP counts active, non-expired shares created by a specific client IP.
+func (d *DB) CountActiveSharesByIP(ctx context.Context, clientIP string, now time.Time) (int, error) {
+	if clientIP == "" {
+		return 0, nil
+	}
+	query := `
+	SELECT COUNT(*)
+	FROM shares
+	WHERE client_ip = ? AND status = ? AND expires_at > ?;
+	`
+	var count int
+	err := d.db.QueryRowContext(ctx, query, clientIP, StatusActive, now.Unix()).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count active shares by IP: %w", err)
 	}
 	return count, nil
 }

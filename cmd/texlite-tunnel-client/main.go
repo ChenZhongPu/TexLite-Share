@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"texlite-share/internal/config"
 	"texlite-share/internal/logging"
@@ -18,27 +19,55 @@ import (
 func main() {
 	cfg := config.DefaultClientConfig()
 
-	flag.StringVar(&cfg.ServerURL, "server-url", "", "Share server URL (e.g. http://127.0.0.1:9000 or https://share.example.com)")
-	flag.StringVar(&cfg.ShareID, "share-id", "", "Assigned Share ID")
-	flag.StringVar(&cfg.Token, "token", "", "Tunnel authentication token (or set TEXLITE_TUNNEL_TOKEN)")
-	flag.StringVar(&cfg.LocalAddr, "local-addr", cfg.LocalAddr, "Local destination address (e.g., 127.0.0.1:3000)")
+	// 1. Load overrides from environment variables
+	config.LoadClientConfigFromEnv(cfg)
+
+	// 2. Command-line flags override environment variables
+	flag.StringVar(&cfg.ServerURL, "server-url", cfg.ServerURL, "Share server URL (default: http://127.0.0.1:9000, or env TEXLITE_SERVER_URL)")
+	flag.StringVar(&cfg.ShareID, "share-id", cfg.ShareID, "Assigned Share ID (optional, auto-creates if omitted)")
+	flag.StringVar(&cfg.Token, "token", cfg.Token, "Tunnel authentication token (optional, auto-creates if omitted)")
+	flag.StringVar(&cfg.LocalAddr, "local-addr", cfg.LocalAddr, "Local destination address (default: 127.0.0.1:3000, or env TEXLITE_LOCAL_ADDR)")
+	flag.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "Server creation API key if required (or env TEXLITE_SHARE_API_KEY)")
+	flag.StringVar(&cfg.TTL, "ttl", cfg.TTL, "Requested share duration, e.g. 2h, 24h (or env TEXLITE_SHARE_TTL)")
+	flag.BoolVar(&cfg.AutoRevokeOnExit, "auto-revoke", cfg.AutoRevokeOnExit, "Automatically revoke share on server upon exit")
 	flag.DurationVar(&cfg.LocalDialTimeout, "dial-timeout", cfg.LocalDialTimeout, "Timeout for dialing local service")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
 
-	// Fallback to environment variable for token if flag not provided (Section 56)
-	if cfg.Token == "" {
-		cfg.Token = os.Getenv("TEXLITE_TUNNEL_TOKEN")
-	}
-
 	logger := logging.InitLogger(*debug)
 	slog.SetDefault(logger)
 
-	if cfg.ServerURL == "" || cfg.ShareID == "" || cfg.Token == "" {
-		fmt.Fprintf(os.Stderr, "Error: --server-url, --share-id, and --token are required\n\n")
-		flag.Usage()
-		os.Exit(2)
+	// 3. Pre-flight check: ensure local TexLite service is running before proceeding
+	if err := tunnel.ProbeLocalService(cfg.LocalAddr, 1500*time.Millisecond); err != nil {
+		fmt.Fprintf(os.Stderr, "\n❌ Error: Local TexLite service is not reachable at %s\n   Details: %v\n   Please start TexLite first before running texlite-share.\n\n", cfg.LocalAddr, err)
+		os.Exit(1)
+	}
+
+	// 4. Auto-create share if share-id or token is not provided
+	var isAutoCreated bool
+	if cfg.ShareID == "" || cfg.Token == "" {
+		slog.Info("no share ID provided, auto-creating a new share on server", "server_url", cfg.ServerURL)
+		created, err := tunnel.AutoCreateShare(context.Background(), cfg.ServerURL, cfg.APIKey, cfg.TTL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n❌ Failed to create share on server (%s): %v\n\n", cfg.ServerURL, err)
+			os.Exit(1)
+		}
+
+		cfg.ShareID = created.ID
+		cfg.Token = created.Token
+		isAutoCreated = true
+
+		fmt.Printf("\n" +
+			"===================================================================\n" +
+			" ✨ TexLite Share is Live!\n" +
+			" 🔗 Public URL:   %s\n" +
+			" 🎯 Local Target: http://%s\n" +
+			" ⏳ Expires At:   %s\n" +
+			"===================================================================\n" +
+			"Press Ctrl+C to stop sharing.\n\n",
+			created.PublicURL, cfg.LocalAddr, created.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
+		)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -51,6 +80,15 @@ func main() {
 	)
 
 	err := tunnel.RunClient(ctx, cfg)
+
+	// 5. Cleanup upon exit
+	if isAutoCreated && cfg.AutoRevokeOnExit {
+		revokeCtx, revokeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer revokeCancel()
+		_ = tunnel.AutoRevokeShare(revokeCtx, cfg.ServerURL, cfg.ShareID, cfg.Token)
+		slog.Info("share automatically revoked upon exit", "share_id", cfg.ShareID)
+	}
+
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("tunnel client stopped cleanly")

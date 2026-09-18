@@ -1,13 +1,17 @@
 package tunnel
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -20,6 +24,91 @@ import (
 
 // ErrTerminal indicates that the tunnel client received a non-retryable error (e.g., 401, 403, 410).
 var ErrTerminal = errors.New("terminal tunnel error")
+
+// ProbeLocalService checks whether the local destination service is alive and accepting connections.
+func ProbeLocalService(localAddr string, timeout time.Duration) error {
+	if err := config.ValidateLocalAddr(localAddr); err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
+	}
+
+	conn, err := net.DialTimeout("tcp", localAddr, timeout)
+	if err != nil {
+		return fmt.Errorf("could not connect to local TexLite service at %s: %w", localAddr, err)
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// CreatedShare contains the response metadata from auto-creating a share on the server.
+type CreatedShare struct {
+	ID        string    `json:"id"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	PublicURL string    `json:"publicUrl"`
+}
+
+// AutoCreateShare calls the server's POST /api/v1/shares to provision a share dynamically.
+func AutoCreateShare(ctx context.Context, serverURL, apiKey, ttl string) (*CreatedShare, error) {
+	endpoint := strings.TrimRight(serverURL, "/") + "/api/v1/shares"
+
+	payload := map[string]string{}
+	if ttl != "" {
+		payload["ttl"] = ttl
+	}
+	bodyBytes, _ := json.Marshal(payload)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct create share request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to reach share server at %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		respBody, _ := ioReadAll(resp.Body, 512)
+		return nil, fmt.Errorf("server returned error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var share CreatedShare
+	if err := json.NewDecoder(resp.Body).Decode(&share); err != nil {
+		return nil, fmt.Errorf("failed to decode create share response: %w", err)
+	}
+	return &share, nil
+}
+
+// AutoRevokeShare calls DELETE /api/v1/shares/{id} to clean up the share upon client exit.
+func AutoRevokeShare(ctx context.Context, serverURL, shareID, token string) error {
+	endpoint := fmt.Sprintf("%s/api/v1/shares/%s", strings.TrimRight(serverURL, "/"), shareID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+func ioReadAll(r io.Reader, maxBytes int64) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, maxBytes))
+}
 
 // RunClient runs the tunnel client loop, maintaining a persistent multiplexed connection
 // to the share server and forwarding streams to the local target address.

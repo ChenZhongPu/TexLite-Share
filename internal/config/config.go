@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ type ServerConfig struct {
 	MaxActiveShares    int
 	MaxStreamsPerShare int
 	MaxTotalStreams    int
+	RateLimitPerMin    int
+	MaxSharesPerIP     int
 	SweepInterval      time.Duration
 	DefaultTTL         time.Duration
 	HandshakeTimeout   time.Duration
@@ -36,6 +39,8 @@ func DefaultServerConfig() *ServerConfig {
 		MaxActiveShares:    50,
 		MaxStreamsPerShare: 64,
 		MaxTotalStreams:    1024,
+		RateLimitPerMin:    5,
+		MaxSharesPerIP:     5,
 		SweepInterval:      30 * time.Second,
 		DefaultTTL:         24 * time.Hour,
 		HandshakeTimeout:   10 * time.Second,
@@ -48,6 +53,9 @@ type ClientConfig struct {
 	ShareID          string
 	Token            string
 	LocalAddr        string
+	APIKey           string
+	TTL              string
+	AutoRevokeOnExit bool
 	LocalDialTimeout time.Duration
 	MaxRetryDelay    time.Duration
 }
@@ -55,10 +63,44 @@ type ClientConfig struct {
 // DefaultClientConfig returns standard client defaults.
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
+		ServerURL:        "http://127.0.0.1:9000",
 		LocalAddr:        "127.0.0.1:3000",
+		TTL:              "24h",
+		AutoRevokeOnExit: true,
 		LocalDialTimeout: 5 * time.Second,
 		MaxRetryDelay:    30 * time.Second,
 	}
+}
+
+// LoadClientConfigFromEnv loads client configuration overrides from environment variables.
+func LoadClientConfigFromEnv(cfg *ClientConfig) {
+	if v := getEnv("TEXLITE_SERVER_URL", "TEXLITE_SHARE_SERVER_URL"); v != "" {
+		cfg.ServerURL = v
+	}
+	if v := getEnv("TEXLITE_LOCAL_ADDR"); v != "" {
+		cfg.LocalAddr = v
+	}
+	if v := getEnv("TEXLITE_SHARE_API_KEY"); v != "" {
+		cfg.APIKey = v
+	}
+	if v := getEnv("TEXLITE_SHARE_TTL"); v != "" {
+		cfg.TTL = v
+	}
+	if v := getEnv("TEXLITE_SHARE_ID"); v != "" {
+		cfg.ShareID = v
+	}
+	if v := getEnv("TEXLITE_TUNNEL_TOKEN"); v != "" {
+		cfg.Token = v
+	}
+}
+
+func getEnv(keys ...string) string {
+	for _, k := range keys {
+		if val := strings.TrimSpace(os.Getenv(k)); val != "" {
+			return val
+		}
+	}
+	return ""
 }
 
 // ValidateLocalAddr strictly ensures that the local target address is a loopback destination.
