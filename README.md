@@ -11,12 +11,12 @@ TexLite Share enables users to instantly expose their local TexLite instance (e.
 Install or upgrade `texlite-tunnel-client` directly via:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/textlite-share-client.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/install-client.sh | bash
 ```
 
 > **Note**: Installs to `~/.local/bin/texlite-tunnel-client` by default. To customize install path, prefix with `BIN_DIR`:
 > ```bash
-> BIN_DIR=~/.local/share/bin curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/textlite-share-client.sh | bash
+> BIN_DIR=~/.local/share/bin curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/install-client.sh | bash
 > ```
 
 ---

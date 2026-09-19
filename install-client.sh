@@ -3,7 +3,7 @@
 # TexLite Share Tunnel Client - One-Line Installer
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/textlite-share-client.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ChenZhongPu/TexLite-Share/main/install-client.sh | bash
 #
 # Custom options:
 #   BIN_DIR=~/.local/bin curl -fsSL ... | bash       # Custom install directory (default: ~/.local/bin)
