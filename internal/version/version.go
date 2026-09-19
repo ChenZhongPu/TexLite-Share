@@ -7,7 +7,7 @@ import (
 
 var (
 	// Version is the semantic version of texlite-share.
-	Version = "0.1.7"
+	Version = "0.1.8"
 	// GitCommit is the git commit sha injected at build time.
 	GitCommit = "dev"
 	// BuildDate is the timestamp of the build.

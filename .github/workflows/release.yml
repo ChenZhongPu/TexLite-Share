@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.8 or v0.1.8)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Publish Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build and package release archives
+        run: |
+          set -euo pipefail
+
+          # Determine version
+          INPUT_VER="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VER" ]; then
+            VERSION="${INPUT_VER#v}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+
+          GIT_COMMIT="${GITHUB_SHA::7}"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          PKG="texlite-share/internal/version"
+          LDFLAGS="-s -w -X ${PKG}.Version=${VERSION} -X ${PKG}.GitCommit=${GIT_COMMIT} -X ${PKG}.BuildDate=${BUILD_DATE}"
+
+          echo "Building TexLite Share release version: ${VERSION} (${GIT_COMMIT})"
+
+          mkdir -p dist
+
+          TARGETS=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+            "windows/arm64"
+          )
+
+          for target in "${TARGETS[@]}"; do
+            GOOS="${target%%/*}"
+            GOARCH="${target##*/}"
+            echo "=== Building ${GOOS}/${GOARCH} ==="
+
+            EXT=""
+            if [ "$GOOS" = "windows" ]; then
+              EXT=".exe"
+            fi
+
+            STAGE_DIR="dist/stage/texlite-share_${VERSION}_${GOOS}_${GOARCH}"
+            mkdir -p "$STAGE_DIR"
+
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="$LDFLAGS" -o "$STAGE_DIR/texlite-share-server${EXT}" ./cmd/texlite-share-server
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -ldflags="$LDFLAGS" -o "$STAGE_DIR/texlite-tunnel-client${EXT}" ./cmd/texlite-tunnel-client
+
+            if [ -f README.md ]; then
+              cp README.md "$STAGE_DIR/"
+            fi
+
+            if [ "$GOOS" = "windows" ]; then
+              (cd "$STAGE_DIR" && zip -r "../../texlite-share_${VERSION}_${GOOS}_${GOARCH}.zip" .)
+            else
+              tar -czvf "dist/texlite-share_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C "$STAGE_DIR" .
+            fi
+          done
+
+          rm -rf dist/stage
+
+          echo "=== Generating SHA256 Checksums ==="
+          (cd dist && sha256sum *.tar.gz *.zip > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          generate_release_notes: true

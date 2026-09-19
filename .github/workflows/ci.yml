@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v*'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Verify module dependencies
+        run: go mod verify
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run unit tests with race detector
+        run: go test -v -race ./...
+
+      - name: Run integration tests
+        run: go test -v ./integration
+
+      - name: Test build server binary
+        run: CGO_ENABLED=0 go build -v -o /dev/null ./cmd/texlite-share-server
+
+      - name: Test build client binary
+        run: CGO_ENABLED=0 go build -v -o /dev/null ./cmd/texlite-tunnel-client
