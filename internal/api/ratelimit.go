@@ -37,6 +37,15 @@ func (l *IPRateLimiter) Allow(ip string) bool {
 	now := time.Now()
 	cutoff := now.Add(-l.window)
 
+	// Periodic cleanup of stale IP records if map grows large
+	if len(l.history) > 1000 {
+		for k, v := range l.history {
+			if len(v) == 0 || v[len(v)-1].Before(cutoff) {
+				delete(l.history, k)
+			}
+		}
+	}
+
 	// Filter timestamps within current window
 	times := l.history[ip]
 	valid := times[:0]

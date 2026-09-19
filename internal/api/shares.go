@@ -60,15 +60,12 @@ type ServerAPI struct {
 
 // NewServerAPI initializes a new ServerAPI.
 func NewServerAPI(cfg *config.ServerConfig, db *database.DB, reg *registry.Registry) *ServerAPI {
-	rateLimit := cfg.RateLimitPerMin
-	if rateLimit <= 0 {
-		rateLimit = 5
-	}
+	rateLimit := cfg.RateLimitPerDay
 	return &ServerAPI{
 		cfg:      cfg,
 		db:       db,
 		registry: reg,
-		limiter:  NewIPRateLimiter(rateLimit, 1*time.Minute),
+		limiter:  NewIPRateLimiter(rateLimit, 24*time.Hour),
 	}
 }
 
@@ -96,10 +93,10 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 
 	clientIP := ExtractClientIP(r)
 
-	// 1. IP rate limiting (frequency check)
+	// 1. IP rate limiting (daily frequency check)
 	if a.limiter != nil && !a.limiter.Allow(clientIP) {
-		slog.Warn("client share creation rate limit exceeded", "client_ip", clientIP)
-		http.Error(w, "Too Many Requests: share creation rate limit exceeded. Please wait a moment.", http.StatusTooManyRequests)
+		slog.Warn("client share creation daily rate limit exceeded", "client_ip", clientIP)
+		http.Error(w, "Too Many Requests: daily share creation rate limit exceeded for your IP. Please try again tomorrow.", http.StatusTooManyRequests)
 		return
 	}
 

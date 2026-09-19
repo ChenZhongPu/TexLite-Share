@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,7 +23,7 @@ type ServerConfig struct {
 	MaxActiveShares    int
 	MaxStreamsPerShare int
 	MaxTotalStreams    int
-	RateLimitPerMin    int
+	RateLimitPerDay    int
 	MaxSharesPerIP     int
 	SweepInterval      time.Duration
 	DefaultTTL         time.Duration
@@ -42,7 +43,7 @@ func DefaultServerConfig() *ServerConfig {
 		MaxActiveShares:    50,
 		MaxStreamsPerShare: 64,
 		MaxTotalStreams:    1024,
-		RateLimitPerMin:    5,
+		RateLimitPerDay:    20,
 		MaxSharesPerIP:     5,
 		SweepInterval:      30 * time.Second,
 		DefaultTTL:         1 * time.Hour,
@@ -98,6 +99,16 @@ func LoadServerConfigFromEnv(cfg *ServerConfig) {
 	if v := getEnv("TEXLITE_DEFAULT_TTL", "TEXLITE_SHARE_TTL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			cfg.DefaultTTL = d
+		}
+	}
+	if v := getEnv("TEXLITE_MAX_SHARES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxActiveShares = n
+		}
+	}
+	if v := getEnv("TEXLITE_RATE_LIMIT_PER_DAY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.RateLimitPerDay = n
 		}
 	}
 	if v := getEnv("TEXLITE_ASSET_CACHE_DIR"); v != "" {

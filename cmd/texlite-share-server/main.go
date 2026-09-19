@@ -35,7 +35,7 @@ func main() {
 	flag.IntVar(&cfg.MaxActiveShares, "max-shares", cfg.MaxActiveShares, "Maximum active non-expired shares allowed")
 	flag.IntVar(&cfg.MaxStreamsPerShare, "max-streams-per-share", cfg.MaxStreamsPerShare, "Maximum concurrent streams allowed per share")
 	flag.IntVar(&cfg.MaxTotalStreams, "max-total-streams", cfg.MaxTotalStreams, "Maximum total concurrent streams across all shares")
-	flag.IntVar(&cfg.RateLimitPerMin, "rate-limit-per-min", cfg.RateLimitPerMin, "Maximum share creations allowed per minute per client IP")
+	flag.IntVar(&cfg.RateLimitPerDay, "rate-limit-per-day", cfg.RateLimitPerDay, "Maximum share creations allowed per day per client IP (0 to disable)")
 	flag.IntVar(&cfg.MaxSharesPerIP, "max-shares-per-ip", cfg.MaxSharesPerIP, "Maximum active non-expired shares allowed per client IP")
 	flag.DurationVar(&cfg.SweepInterval, "sweep-interval", cfg.SweepInterval, "Interval for background expiration sweep")
 	flag.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default time-to-live for created shares (e.g. 1h, 2h, 24h)")

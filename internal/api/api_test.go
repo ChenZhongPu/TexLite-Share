@@ -251,7 +251,7 @@ func TestRateLimitPerIP(t *testing.T) {
 	defer db.Close()
 
 	cfg := config.DefaultServerConfig()
-	cfg.RateLimitPerMin = 2
+	cfg.RateLimitPerDay = 2
 	cfg.AssetCacheDir = filepath.Join(dir, "asset-cache")
 	reg := registry.NewRegistry()
 	router := api.NewRouter(cfg, db, reg)
@@ -290,7 +290,7 @@ func TestMaxSharesPerIP(t *testing.T) {
 	defer db.Close()
 
 	cfg := config.DefaultServerConfig()
-	cfg.RateLimitPerMin = 100 // disable rate limit to test quota
+	cfg.RateLimitPerDay = 100 // disable rate limit to test quota
 	cfg.MaxSharesPerIP = 2
 	cfg.AssetCacheDir = filepath.Join(dir, "asset-cache")
 	reg := registry.NewRegistry()
