@@ -111,8 +111,70 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 	if !list[0].Online {
 		t.Fatal("expected share to show Online=true")
 	}
+	if list[0].ClientIP == "" {
+		t.Fatal("expected share to have ClientIP")
+	}
+	if list[0].Country == "" {
+		t.Fatal("expected share to have Country populated")
+	}
 
-	// 6. Verify that the PUBLIC router rejects admin-only APIs with 404 (Physical isolation)
+	// 6. Extend Share expiration by 1 month (+1 month)
+	extReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares/"+created.ID+"/expires", bytes.NewBufferString(`{"extend":"1 month"}`))
+	extReq.Header.Set("Authorization", "Bearer admin-key-123")
+	extRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(extRec, extReq)
+	if extRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for extend share, got %d: %s", extRec.Code, extRec.Body.String())
+	}
+	var extResp struct {
+		ID        string `json:"id"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.NewDecoder(extRec.Body).Decode(&extResp); err != nil {
+		t.Fatalf("failed to decode extend resp: %v", err)
+	}
+
+	// 7. Extend Share expiration by 1 year (+1 year)
+	extYearReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares/"+created.ID+"/expires", bytes.NewBufferString(`{"extend":"1 year"}`))
+	extYearReq.Header.Set("Authorization", "Bearer admin-key-123")
+	extYearRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(extYearRec, extYearReq)
+	if extYearRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for extend 1 year, got %d", extYearRec.Code)
+	}
+
+	// 8. Custom manual expiration update via PATCH
+	patchReq := httptest.NewRequest(http.MethodPatch, "/api/v1/shares/"+created.ID, bytes.NewBufferString(`{"expiresAt":"2030-01-01T12:00:00Z"}`))
+	patchReq.Header.Set("Authorization", "Bearer admin-key-123")
+	patchRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for patch expiresAt, got %d: %s", patchRec.Code, patchRec.Body.String())
+	}
+
+	// 9. Revoke Share and verify it is EXCLUDED from listing (REVOKED data not displayed)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/shares/"+created.ID, nil)
+	delReq.Header.Set("Authorization", "Bearer admin-key-123")
+	delRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204 for delete share, got %d", delRec.Code)
+	}
+
+	listAfterRevokeReq := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
+	listAfterRevokeReq.Header.Set("Authorization", "Bearer admin-key-123")
+	listAfterRevokeRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(listAfterRevokeRec, listAfterRevokeReq)
+	if listAfterRevokeRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for list after revoke, got %d", listAfterRevokeRec.Code)
+	}
+	var listAfter []api.ShareView
+	_ = json.NewDecoder(listAfterRevokeRec.Body).Decode(&listAfter)
+	if len(listAfter) != 0 {
+		t.Fatalf("expected 0 shares after revoking (REVOKED must be excluded), got %d shares", len(listAfter))
+	}
+
+	// 10. Verify that the PUBLIC router rejects admin-only APIs with 404 (Physical isolation)
 	// Admin listing of all shares should be rejected on public router
 	pubListReq := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
 	pubListRec := httptest.NewRecorder()
@@ -127,6 +189,29 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 	publicHandler.ServeHTTP(pubStatsRec, pubStatsReq)
 	if pubStatsRec.Code != http.StatusNotFound {
 		t.Fatalf("expected public router to return 404 for /api/v1/stats, got %d", pubStatsRec.Code)
+	}
+
+	// 11. Verify stats has totalRevoked = 1 and country breakdown
+	statsReq2 := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	statsReq2.Header.Set("Authorization", "Bearer admin-key-123")
+	statsRec2 := httptest.NewRecorder()
+	adminHandler.ServeHTTP(statsRec2, statsReq2)
+	if statsRec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for stats after revoke, got %d", statsRec2.Code)
+	}
+	var statsAfter api.StatsView
+	_ = json.NewDecoder(statsRec2.Body).Decode(&statsAfter)
+	if statsAfter.TotalRevoked != 1 {
+		t.Fatalf("expected totalRevoked 1, got %d", statsAfter.TotalRevoked)
+	}
+
+	// 12. Attempt to extend expiration of revoked share must fail
+	extRevokedReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares/"+created.ID+"/expires", strings.NewReader(`{"extend":"1 month"}`))
+	extRevokedReq.Header.Set("Authorization", "Bearer admin-key-123")
+	extRevokedRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(extRevokedRec, extRevokedReq)
+	if extRevokedRec.Code != http.StatusInternalServerError && extRevokedRec.Code != http.StatusNotFound {
+		t.Fatalf("expected error when extending revoked share, got %d", extRevokedRec.Code)
 	}
 
 	_ = db

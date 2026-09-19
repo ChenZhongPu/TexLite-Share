@@ -22,6 +22,7 @@ import (
 
 func main() {
 	cfg := config.DefaultServerConfig()
+	config.LoadServerConfigFromEnv(cfg)
 
 	showVersion := flag.Bool("version", false, "Show version information and exit")
 	flag.BoolVar(showVersion, "v", false, "Show version information and exit (shorthand)")
@@ -37,7 +38,9 @@ func main() {
 	flag.IntVar(&cfg.RateLimitPerMin, "rate-limit-per-min", cfg.RateLimitPerMin, "Maximum share creations allowed per minute per client IP")
 	flag.IntVar(&cfg.MaxSharesPerIP, "max-shares-per-ip", cfg.MaxSharesPerIP, "Maximum active non-expired shares allowed per client IP")
 	flag.DurationVar(&cfg.SweepInterval, "sweep-interval", cfg.SweepInterval, "Interval for background expiration sweep")
-	flag.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default time-to-live for created shares (e.g. 24h, 2h)")
+	flag.DurationVar(&cfg.DefaultTTL, "default-ttl", cfg.DefaultTTL, "Default time-to-live for created shares (e.g. 1h, 2h, 24h)")
+	flag.StringVar(&cfg.AssetCacheDir, "asset-cache-dir", cfg.AssetCacheDir, "Directory to store cached frontend static assets (empty to disable)")
+	flag.IntVar(&cfg.AssetCacheMaxMB, "asset-cache-max-mb", cfg.AssetCacheMaxMB, "Maximum disk usage in megabytes for asset cache (default: 256, 0 to disable)")
 	debug := flag.Bool("debug", false, "Enable debug logging")
 
 	flag.Parse()
@@ -58,6 +61,8 @@ func main() {
 		"base_domain", cfg.BaseDomain,
 		"db", cfg.DBPath,
 		"max_shares", cfg.MaxActiveShares,
+		"asset_cache_dir", cfg.AssetCacheDir,
+		"asset_cache_max_mb", cfg.AssetCacheMaxMB,
 	)
 
 	// 1. Open SQLite database

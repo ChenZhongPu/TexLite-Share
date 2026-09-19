@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"texlite-share/internal/api"
 	"texlite-share/internal/config"
 	"texlite-share/internal/database"
+	"texlite-share/internal/protocol"
 	"texlite-share/internal/registry"
 )
 
@@ -30,6 +32,7 @@ func setupTestRouter(t *testing.T, apiKey string, maxShares int) (*api.Router, *
 
 	cfg := config.DefaultServerConfig()
 	cfg.CreateAPIKey = apiKey
+	cfg.AssetCacheDir = filepath.Join(dir, "asset-cache")
 	if maxShares > 0 {
 		cfg.MaxActiveShares = maxShares
 	}
@@ -107,25 +110,25 @@ func TestCreateAndRevokeShare(t *testing.T) {
 		t.Fatalf("expected status 204, got %d", delRec.Code)
 	}
 
-	// Check DB updated to REVOKED
+	// Check DB purged share content and updated revoked stats
 	share, err = db.GetShare(context.Background(), resp.ID)
-	if err != nil {
-		t.Fatalf("failed to query share in db: %v", err)
+	if err == nil || !errors.Is(err, protocol.ErrShareNotFound) {
+		t.Fatalf("expected share not found in db after revoke, got err: %v", err)
 	}
-	if share.Status != database.StatusRevoked {
-		t.Fatalf("expected status REVOKED, got %q", share.Status)
-	}
-	if share.RevokedAt == nil {
-		t.Fatal("expected revoked_at to be set")
+
+	totalRevoked, _, err := db.GetRevokedStats(context.Background())
+	if err != nil || totalRevoked != 1 {
+		t.Fatalf("expected totalRevoked 1, got %d (err: %v)", totalRevoked, err)
 	}
 
 	_ = reg
 }
 
-func TestCreateShare_CustomTTL(t *testing.T) {
+func TestCreateShare_ClientCannotOverrideTTL(t *testing.T) {
 	router, _, _ := setupTestRouter(t, "", 50)
 
-	body := `{"ttl": "2h"}`
+	// Non-admin client attempts to set a custom 5h TTL
+	body := `{"ttl": "5h"}`
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(body))
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -139,9 +142,35 @@ func TestCreateShare_CustomTTL(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
+	// Should be strictly clamped to server default TTL (1 hour), NOT 5 hours
 	diff := time.Until(resp.ExpiresAt)
-	if diff < 1*time.Hour+50*time.Minute || diff > 2*time.Hour+1*time.Minute {
-		t.Fatalf("expected TTL around 2h, got diff: %v", diff)
+	if diff < 50*time.Minute || diff > 1*time.Hour+5*time.Minute {
+		t.Fatalf("expected TTL around 1h default, got diff: %v", diff)
+	}
+}
+
+func TestCreateShare_AdminCanSetTTL(t *testing.T) {
+	router, _, _ := setupTestRouter(t, "", 50)
+
+	// Admin request with admin context sets custom 2h TTL
+	body := `{"ttl": "2h"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(body))
+	req = req.WithContext(api.WithAdminAuth(req.Context()))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rec.Code)
+	}
+
+	var resp api.CreateShareResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	diff := time.Until(resp.ExpiresAt)
+	if diff < 1*time.Hour+50*time.Minute || diff > 2*time.Hour+5*time.Minute {
+		t.Fatalf("expected TTL around 2h for admin, got diff: %v", diff)
 	}
 }
 
@@ -223,6 +252,7 @@ func TestRateLimitPerIP(t *testing.T) {
 
 	cfg := config.DefaultServerConfig()
 	cfg.RateLimitPerMin = 2
+	cfg.AssetCacheDir = filepath.Join(dir, "asset-cache")
 	reg := registry.NewRegistry()
 	router := api.NewRouter(cfg, db, reg)
 
@@ -262,6 +292,7 @@ func TestMaxSharesPerIP(t *testing.T) {
 	cfg := config.DefaultServerConfig()
 	cfg.RateLimitPerMin = 100 // disable rate limit to test quota
 	cfg.MaxSharesPerIP = 2
+	cfg.AssetCacheDir = filepath.Join(dir, "asset-cache")
 	reg := registry.NewRegistry()
 	router := api.NewRouter(cfg, db, reg)
 

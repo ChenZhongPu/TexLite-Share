@@ -27,6 +27,8 @@ type ServerConfig struct {
 	SweepInterval      time.Duration
 	DefaultTTL         time.Duration
 	HandshakeTimeout   time.Duration
+	AssetCacheDir      string
+	AssetCacheMaxMB    int
 }
 
 // DefaultServerConfig returns standard production/dev defaults.
@@ -43,8 +45,10 @@ func DefaultServerConfig() *ServerConfig {
 		RateLimitPerMin:    5,
 		MaxSharesPerIP:     5,
 		SweepInterval:      30 * time.Second,
-		DefaultTTL:         24 * time.Hour,
+		DefaultTTL:         1 * time.Hour,
 		HandshakeTimeout:   10 * time.Second,
+		AssetCacheDir:      "asset-cache",
+		AssetCacheMaxMB:    256,
 	}
 }
 
@@ -55,7 +59,6 @@ type ClientConfig struct {
 	Token            string
 	LocalAddr        string
 	APIKey           string
-	TTL              string
 	AutoRevokeOnExit bool
 	LocalDialTimeout time.Duration
 	MaxRetryDelay    time.Duration
@@ -66,10 +69,39 @@ func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
 		ServerURL:        "http://127.0.0.1:9000",
 		LocalAddr:        "127.0.0.1:3000",
-		TTL:              "24h",
 		AutoRevokeOnExit: true,
 		LocalDialTimeout: 5 * time.Second,
 		MaxRetryDelay:    30 * time.Second,
+	}
+}
+
+// LoadServerConfigFromEnv loads server configuration overrides from environment variables.
+func LoadServerConfigFromEnv(cfg *ServerConfig) {
+	if v := getEnv("TEXLITE_LISTEN_ADDR"); v != "" {
+		cfg.ListenAddr = v
+	}
+	if v := getEnv("TEXLITE_ADMIN_LISTEN_ADDR"); v != "" {
+		cfg.AdminListenAddr = v
+	}
+	if v := getEnv("TEXLITE_BASE_DOMAIN"); v != "" {
+		cfg.BaseDomain = v
+	}
+	if v := getEnv("TEXLITE_DB_PATH"); v != "" {
+		cfg.DBPath = v
+	}
+	if v := getEnv("TEXLITE_ADMIN_API_KEY"); v != "" {
+		cfg.AdminAPIKey = v
+	}
+	if v := getEnv("TEXLITE_CREATE_API_KEY"); v != "" {
+		cfg.CreateAPIKey = v
+	}
+	if v := getEnv("TEXLITE_DEFAULT_TTL", "TEXLITE_SHARE_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.DefaultTTL = d
+		}
+	}
+	if v := getEnv("TEXLITE_ASSET_CACHE_DIR"); v != "" {
+		cfg.AssetCacheDir = v
 	}
 }
 
@@ -83,9 +115,6 @@ func LoadClientConfigFromEnv(cfg *ClientConfig) {
 	}
 	if v := getEnv("TEXLITE_SHARE_API_KEY"); v != "" {
 		cfg.APIKey = v
-	}
-	if v := getEnv("TEXLITE_SHARE_TTL"); v != "" {
-		cfg.TTL = v
 	}
 	if v := getEnv("TEXLITE_SHARE_ID"); v != "" {
 		cfg.ShareID = v

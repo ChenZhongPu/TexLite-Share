@@ -1,8 +1,11 @@
 package registry_test
 
 import (
+	"net"
 	"testing"
 	"time"
+
+	"github.com/xtaci/smux"
 
 	"texlite-share/internal/registry"
 )
@@ -105,3 +108,43 @@ func TestRegistry_StreamCounters(t *testing.T) {
 		t.Fatalf("expected 1 total stream on registry, got %d", reg.TotalStreams())
 	}
 }
+
+func TestRegistry_TransportKeepAlivePool(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	smuxSess, err := smux.Server(p1, nil)
+	if err != nil {
+		t.Fatalf("failed to create smux session: %v", err)
+	}
+	defer smuxSess.Close()
+
+	reg := registry.NewRegistry()
+	_, _ = reg.Register("share1", smuxSess, time.Now().Add(time.Hour))
+
+	sess, found := reg.Get("share1")
+	if !found {
+		t.Fatal("session not found")
+	}
+
+	if sess.Transport == nil {
+		t.Fatal("expected non-nil pooled Transport on session")
+	}
+
+	if sess.Transport.MaxIdleConns != 100 {
+		t.Fatalf("expected MaxIdleConns=100, got %d", sess.Transport.MaxIdleConns)
+	}
+
+	if sess.Transport.MaxIdleConnsPerHost != 50 {
+		t.Fatalf("expected MaxIdleConnsPerHost=50, got %d", sess.Transport.MaxIdleConnsPerHost)
+	}
+
+	if sess.Transport.IdleConnTimeout != 90*time.Second {
+		t.Fatalf("expected IdleConnTimeout=90s, got %v", sess.Transport.IdleConnTimeout)
+	}
+
+	// Calling sess.Close() should close transport and smux session cleanly
+	sess.Close()
+}
+

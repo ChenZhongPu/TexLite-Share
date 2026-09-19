@@ -94,6 +94,9 @@ func (a *ServerAPI) HandleTunnelWS(w http.ResponseWriter, r *http.Request, share
 	}
 	defer wsConn.Close(websocket.StatusNormalClosure, "server closing tunnel")
 
+	// Set large read limit to support large multiplexed frames without throttling
+	wsConn.SetReadLimit(16 * 1024 * 1024)
+
 	// 7. Wrap WebSocket as net.Conn
 	netConn := websocket.NetConn(r.Context(), wsConn, websocket.MessageBinary)
 	defer netConn.Close()

@@ -55,7 +55,7 @@ func TestAutoCreateAndRevokeShare(t *testing.T) {
 	defer server.Close()
 
 	// 1. Auto create
-	share, err := tunnel.AutoCreateShare(context.Background(), server.URL, "", "2h")
+	share, err := tunnel.AutoCreateShare(context.Background(), server.URL, "")
 	if err != nil {
 		t.Fatalf("AutoCreateShare failed: %v", err)
 	}

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,10 +14,41 @@ import (
 	"texlite-share/internal/auth"
 	"texlite-share/internal/config"
 	"texlite-share/internal/database"
+	"texlite-share/internal/geoip"
 	"texlite-share/internal/logging"
 	"texlite-share/internal/protocol"
 	"texlite-share/internal/registry"
 )
+
+type contextKey string
+
+const AdminAuthContextKey contextKey = "texlite_admin_auth"
+
+func secureCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// WithAdminAuth returns a new context marked as authenticated admin.
+func WithAdminAuth(ctx context.Context) context.Context {
+	return context.WithValue(ctx, AdminAuthContextKey, true)
+}
+
+// IsAdminRequest returns true if the request was made via admin context or with the admin API key.
+func IsAdminRequest(r *http.Request, adminKey string) bool {
+	if r.Context().Value(AdminAuthContextKey) != nil {
+		return true
+	}
+	if adminKey != "" {
+		token, err := auth.ExtractBearerToken(r)
+		if err == nil && secureCompare(token, adminKey) {
+			return true
+		}
+	}
+	return false
+}
 
 // ServerAPI encapsulates all API handlers for share management and tunnel termination.
 type ServerAPI struct {
@@ -41,6 +74,7 @@ func NewServerAPI(cfg *config.ServerConfig, db *database.DB, reg *registry.Regis
 
 // CreateShareRequest represents the optional JSON body for creating a share.
 type CreateShareRequest struct {
+	ID         string `json:"id,omitempty"`         // Optional custom ID for fixed subdomain (Admin only)
 	TTL        string `json:"ttl,omitempty"`        // e.g. "2h", "30m"
 	TTLSeconds int64  `json:"ttlSeconds,omitempty"` // e.g. 7200
 }
@@ -72,16 +106,20 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 	// 2. Verify creation auth (API key)
 	if a.cfg.CreateAPIKey != "" {
 		token, err := auth.ExtractBearerToken(r)
-		if err != nil || token != a.cfg.CreateAPIKey {
+		if err != nil || !secureCompare(token, a.cfg.CreateAPIKey) {
 			slog.Warn("unauthorized share creation attempt", "remote_addr", r.RemoteAddr)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 	}
 
-	// 3. Optional request body parsing for custom TTL
+	// 3. TTL calculation & custom fixed share ID (Admin only)
+	// Standard clients cannot customize TTL; the default expiration is strictly 1h (ServerConfig.DefaultTTL).
+	// Only server administrators or requests authenticated via the Admin port / Admin API key may customize TTL or set a fixed ID.
 	ttl := a.cfg.DefaultTTL
-	if r.Body != nil && r.ContentLength > 0 {
+	var customShareID string
+
+	if IsAdminRequest(r, a.cfg.AdminAPIKey) && r.Body != nil {
 		var req CreateShareRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
 			if req.TTL != "" {
@@ -91,10 +129,24 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 			} else if req.TTLSeconds > 0 {
 				ttl = time.Duration(req.TTLSeconds) * time.Second
 			}
+			if req.ID != "" {
+				reqID := strings.TrimSpace(strings.ToLower(req.ID))
+				if err := protocol.ValidateShareID(reqID); err != nil {
+					http.Error(w, fmt.Sprintf("Invalid Share ID format %q: %v", reqID, err), http.StatusBadRequest)
+					return
+				}
+				// Check if ID is already in use by an active share
+				existing, err := a.db.GetShare(r.Context(), reqID)
+				if err == nil && existing != nil && existing.Status == database.StatusActive && time.Now().UTC().Before(existing.ExpiresAt) {
+					http.Error(w, fmt.Sprintf("Conflict: Share ID %q is already active", reqID), http.StatusConflict)
+					return
+				}
+				customShareID = reqID
+			}
 		}
 	}
 	if ttl <= 0 {
-		ttl = 24 * time.Hour
+		ttl = 1 * time.Hour
 	}
 
 	now := time.Now().UTC()
@@ -128,11 +180,15 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shareID, err := protocol.GenerateShareID()
-	if err != nil {
-		slog.Error("failed to generate share ID", "error", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
+	shareID := customShareID
+	if shareID == "" {
+		generated, err := protocol.GenerateShareID()
+		if err != nil {
+			slog.Error("failed to generate share ID", "error", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		shareID = generated
 	}
 
 	token, err := auth.GenerateToken()
@@ -144,14 +200,16 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 
 	tokenHash := auth.HashToken(token)
 	expiresAt := now.Add(ttl)
+	country := geoip.LookupWithContext(r.Context(), clientIP)
 
 	share := &database.Share{
-		ID:        shareID,
-		TokenHash: tokenHash[:],
-		Status:    database.StatusActive,
-		CreatedAt: now,
-		ExpiresAt: expiresAt,
-		ClientIP:  clientIP,
+		ID:            shareID,
+		TokenHash:     tokenHash[:],
+		Status:        database.StatusActive,
+		CreatedAt:     now,
+		ExpiresAt:     expiresAt,
+		ClientIP:      clientIP,
+		ClientCountry: country,
 	}
 
 	if err := a.db.CreateShare(r.Context(), share); err != nil {
@@ -160,27 +218,23 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
-		scheme = "https"
+	publicURL := fmt.Sprintf("http://%s.%s", shareID, a.cfg.BaseDomain)
+	resp := CreateShareResponse{
+		ID:        shareID,
+		Token:     token,
+		ExpiresAt: expiresAt,
+		PublicURL: publicURL,
 	}
 
-	publicURL := fmt.Sprintf("%s://%s.%s", scheme, shareID, a.cfg.BaseDomain)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(resp)
 
 	slog.Info("share created successfully",
 		"event", logging.EventShareCreated,
 		"share_id", shareID,
 		"expires_at", expiresAt.Format(time.RFC3339),
 	)
-
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(CreateShareResponse{
-		ID:        shareID,
-		Token:     token,
-		ExpiresAt: expiresAt,
-		PublicURL: publicURL,
-	})
 }
 
 // HandleRevokeShare handles DELETE /api/v1/shares/{shareID}.
@@ -212,8 +266,8 @@ func (a *ServerAPI) HandleRevokeShare(w http.ResponseWriter, r *http.Request, sh
 		return
 	}
 
-	isAdmin := (a.cfg.AdminAPIKey != "" && bearer == a.cfg.AdminAPIKey) ||
-		(a.cfg.CreateAPIKey != "" && bearer == a.cfg.CreateAPIKey)
+	isAdmin := (a.cfg.AdminAPIKey != "" && secureCompare(bearer, a.cfg.AdminAPIKey)) ||
+		(a.cfg.CreateAPIKey != "" && secureCompare(bearer, a.cfg.CreateAPIKey))
 	isShareToken := auth.VerifyToken(bearer, share.TokenHash)
 	if !isAdmin && !isShareToken {
 		http.Error(w, "Forbidden", http.StatusForbidden)

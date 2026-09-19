@@ -12,7 +12,7 @@ func SmuxConfig() *smux.Config {
 	cfg.Version = 2
 	cfg.KeepAliveInterval = 15 * time.Second
 	cfg.KeepAliveTimeout = 45 * time.Second
-	cfg.MaxReceiveBuffer = 4 * 1024 * 1024 // 4 MB
-	cfg.MaxStreamBuffer = 1 * 1024 * 1024  // 1 MB
+	cfg.MaxReceiveBuffer = 16 * 1024 * 1024 // 16 MB receive buffer for high bandwidth-delay product
+	cfg.MaxStreamBuffer = 4 * 1024 * 1024   // 4 MB stream buffer
 	return cfg
 }

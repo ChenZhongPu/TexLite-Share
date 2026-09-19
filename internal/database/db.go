@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -27,7 +28,8 @@ type Share struct {
 	CreatedAt time.Time
 	ExpiresAt time.Time
 	RevokedAt *time.Time
-	ClientIP  string
+	ClientIP      string
+	ClientCountry string
 }
 
 // DB wraps the SQL database handle and provides share-specific persistence methods.
@@ -63,7 +65,7 @@ func Open(dbPath string) (*DB, error) {
 }
 
 func (d *DB) migrate() error {
-	schema := `
+	baseSchema := `
 	CREATE TABLE IF NOT EXISTS shares (
 		id TEXT PRIMARY KEY,
 		token_hash BLOB NOT NULL,
@@ -71,9 +73,26 @@ func (d *DB) migrate() error {
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		revoked_at INTEGER,
-		client_ip TEXT
+		client_ip TEXT,
+		client_country TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS revoked_stats (
+		country TEXT PRIMARY KEY,
+		count INTEGER NOT NULL DEFAULT 0
+	);
+	`
+	if _, err := d.db.Exec(baseSchema); err != nil {
+		return err
+	}
+
+	// For databases upgraded from older versions:
+	// v0.1.0 - v0.1.3: shares lacked client_ip and client_country
+	// v0.1.4: shares lacked client_country
+	_, _ = d.db.Exec(`ALTER TABLE shares ADD COLUMN client_ip TEXT;`)
+	_, _ = d.db.Exec(`ALTER TABLE shares ADD COLUMN client_country TEXT;`)
+
+	indexSchema := `
 	CREATE INDEX IF NOT EXISTS idx_shares_status
 	ON shares(status);
 
@@ -83,10 +102,19 @@ func (d *DB) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_shares_client_ip
 	ON shares(client_ip);
 	`
-	if _, err := d.db.Exec(schema); err != nil {
+	if _, err := d.db.Exec(indexSchema); err != nil {
 		return err
 	}
-	_, _ = d.db.Exec(`ALTER TABLE shares ADD COLUMN client_ip TEXT;`)
+
+	// Migrate legacy REVOKED shares into revoked_stats if any exist, then purge them
+	_, _ = d.db.Exec(`
+	INSERT INTO revoked_stats (country, count)
+	SELECT COALESCE(NULLIF(client_country, ''), 'Unknown'), COUNT(*)
+	FROM shares WHERE status = 'REVOKED'
+	GROUP BY COALESCE(NULLIF(client_country, ''), 'Unknown')
+	ON CONFLICT(country) DO UPDATE SET count = count + excluded.count;
+	`)
+	_, _ = d.db.Exec(`DELETE FROM shares WHERE status = 'REVOKED';`)
 	return nil
 }
 
@@ -98,8 +126,16 @@ func (d *DB) Close() error {
 // CreateShare stores a new share record in the database.
 func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 	query := `
-	INSERT INTO shares (id, token_hash, status, created_at, expires_at, revoked_at, client_ip)
-	VALUES (?, ?, ?, ?, ?, ?, ?);
+	INSERT INTO shares (id, token_hash, status, created_at, expires_at, revoked_at, client_ip, client_country)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(id) DO UPDATE SET
+		token_hash = excluded.token_hash,
+		status = excluded.status,
+		created_at = excluded.created_at,
+		expires_at = excluded.expires_at,
+		revoked_at = excluded.revoked_at,
+		client_ip = excluded.client_ip,
+		client_country = excluded.client_country;
 	`
 	var revokedAtUnix sql.NullInt64
 	if share.RevokedAt != nil {
@@ -114,6 +150,7 @@ func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 		share.ExpiresAt.Unix(),
 		revokedAtUnix,
 		share.ClientIP,
+		share.ClientCountry,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert share: %w", err)
@@ -124,7 +161,7 @@ func (d *DB) CreateShare(ctx context.Context, share *Share) error {
 // GetShare retrieves a share by its ID.
 func (d *DB) GetShare(ctx context.Context, id string) (*Share, error) {
 	query := `
-	SELECT id, token_hash, status, created_at, expires_at, revoked_at, COALESCE(client_ip, '')
+	SELECT id, token_hash, status, created_at, expires_at, revoked_at, COALESCE(client_ip, ''), COALESCE(client_country, '')
 	FROM shares
 	WHERE id = ?;
 	`
@@ -143,6 +180,7 @@ func (d *DB) GetShare(ctx context.Context, id string) (*Share, error) {
 		&expiresUnix,
 		&revokedAtUnix,
 		&s.ClientIP,
+		&s.ClientCountry,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -193,29 +231,64 @@ func (d *DB) CountActiveSharesByIP(ctx context.Context, clientIP string, now tim
 	return count, nil
 }
 
-// RevokeShare marks an existing share as REVOKED and sets its revoked_at timestamp.
+// RevokeShare removes the share from the database and increments the revoked counter by country.
 func (d *DB) RevokeShare(ctx context.Context, id string, revokedAt time.Time) error {
-	query := `
-	UPDATE shares
-	SET status = ?, revoked_at = ?
-	WHERE id = ? AND status != ?;
-	`
-	res, err := d.db.ExecContext(ctx, query, StatusRevoked, revokedAt.Unix(), id, StatusRevoked)
+	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to revoke share: %w", err)
+		return fmt.Errorf("failed to begin revoke tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var country sql.NullString
+	err = tx.QueryRowContext(ctx, "SELECT client_country FROM shares WHERE id = ?;", id).Scan(&country)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.ErrShareNotFound
+		}
+		return fmt.Errorf("failed to query share for revocation: %w", err)
 	}
 
-	rows, err := res.RowsAffected()
+	countryStr := strings.TrimSpace(country.String)
+	if countryStr == "" {
+		countryStr = "Unknown"
+	}
+
+	statsQuery := `
+	INSERT INTO revoked_stats (country, count)
+	VALUES (?, 1)
+	ON CONFLICT(country) DO UPDATE SET count = count + 1;
+	`
+	if _, err := tx.ExecContext(ctx, statsQuery, countryStr); err != nil {
+		return fmt.Errorf("failed to update revoked_stats: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM shares WHERE id = ?;", id); err != nil {
+		return fmt.Errorf("failed to delete revoked share: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// GetRevokedStats returns the total revoked share count and a breakdown by country.
+func (d *DB) GetRevokedStats(ctx context.Context) (int, map[string]int, error) {
+	rows, err := d.db.QueryContext(ctx, "SELECT country, count FROM revoked_stats;")
 	if err != nil {
-		return err
+		return 0, nil, fmt.Errorf("failed to query revoked_stats: %w", err)
 	}
-	if rows == 0 {
-		// Check if share exists
-		if _, err := d.GetShare(ctx, id); err != nil {
-			return err
+	defer rows.Close()
+
+	byCountry := make(map[string]int)
+	total := 0
+	for rows.Next() {
+		var country string
+		var count int
+		if err := rows.Scan(&country, &count); err != nil {
+			return 0, nil, fmt.Errorf("failed to scan revoked_stats: %w", err)
 		}
+		byCountry[country] = count
+		total += count
 	}
-	return nil
+	return total, byCountry, rows.Err()
 }
 
 // ExpireShares transitions all active shares whose expires_at <= now to 'EXPIRED'
@@ -268,18 +341,19 @@ func (d *DB) ExpireShares(ctx context.Context, now time.Time) ([]string, error) 
 	return expiredIDs, nil
 }
 
-// ListShares retrieves shares ordered by creation time descending.
+// ListShares retrieves shares that are not revoked, ordered by creation time descending.
 func (d *DB) ListShares(ctx context.Context, limit int) ([]*Share, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 	query := `
-	SELECT id, token_hash, status, created_at, expires_at, revoked_at
+	SELECT id, token_hash, status, created_at, expires_at, revoked_at, COALESCE(client_ip, ''), COALESCE(client_country, '')
 	FROM shares
+	WHERE status != ?
 	ORDER BY created_at DESC
 	LIMIT ?;
 	`
-	rows, err := d.db.QueryContext(ctx, query, limit)
+	rows, err := d.db.QueryContext(ctx, query, StatusRevoked, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query shares: %w", err)
 	}
@@ -293,7 +367,7 @@ func (d *DB) ListShares(ctx context.Context, limit int) ([]*Share, error) {
 			expiresUnix   int64
 			revokedAtUnix sql.NullInt64
 		)
-		if err := rows.Scan(&s.ID, &s.TokenHash, &s.Status, &createdUnix, &expiresUnix, &revokedAtUnix); err != nil {
+		if err := rows.Scan(&s.ID, &s.TokenHash, &s.Status, &createdUnix, &expiresUnix, &revokedAtUnix, &s.ClientIP, &s.ClientCountry); err != nil {
 			return nil, fmt.Errorf("failed to scan share: %w", err)
 		}
 		s.CreatedAt = time.Unix(createdUnix, 0).UTC()
@@ -305,4 +379,83 @@ func (d *DB) ListShares(ctx context.Context, limit int) ([]*Share, error) {
 		shares = append(shares, &s)
 	}
 	return shares, rows.Err()
+}
+
+// UpdateShareExpiration updates the expires_at timestamp of a share and reactivates it if newExpiresAt is in the future.
+// It accepts now time.Time for deterministic time handling and runs within a transaction.
+func (d *DB) UpdateShareExpiration(ctx context.Context, id string, newExpiresAt time.Time, now time.Time) (*Share, error) {
+	newStatus := StatusActive
+	if now.After(newExpiresAt) {
+		newStatus = StatusExpired
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+	UPDATE shares
+	SET expires_at = ?, status = ?
+	WHERE id = ? AND status != ?;
+	`
+	res, err := tx.ExecContext(ctx, query, newExpiresAt.Unix(), newStatus, id, StatusRevoked)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update share expiration: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if affected == 0 {
+		return nil, protocol.ErrShareNotFound
+	}
+
+	s, err := d.getShareTx(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit update expiration tx: %w", err)
+	}
+	return s, nil
+}
+
+func (d *DB) getShareTx(ctx context.Context, tx *sql.Tx, id string) (*Share, error) {
+	query := `
+	SELECT id, token_hash, status, created_at, expires_at, revoked_at, COALESCE(client_ip, ''), COALESCE(client_country, '')
+	FROM shares
+	WHERE id = ?;
+	`
+	var (
+		s             Share
+		createdUnix   int64
+		expiresUnix   int64
+		revokedAtUnix sql.NullInt64
+	)
+	err := tx.QueryRowContext(ctx, query, id).Scan(
+		&s.ID,
+		&s.TokenHash,
+		&s.Status,
+		&createdUnix,
+		&expiresUnix,
+		&revokedAtUnix,
+		&s.ClientIP,
+		&s.ClientCountry,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, protocol.ErrShareNotFound
+		}
+		return nil, fmt.Errorf("failed to query share in tx: %w", err)
+	}
+	s.CreatedAt = time.Unix(createdUnix, 0).UTC()
+	s.ExpiresAt = time.Unix(expiresUnix, 0).UTC()
+	if revokedAtUnix.Valid {
+		t := time.Unix(revokedAtUnix.Int64, 0).UTC()
+		s.RevokedAt = &t
+	}
+	return &s, nil
 }

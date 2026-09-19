@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,6 +73,7 @@ func setupTestEnv(t *testing.T, dbPath string, customLocalHandler http.Handler, 
 	cfg := config.DefaultServerConfig()
 	cfg.BaseDomain = "share.local"
 	cfg.DBPath = dbPath
+	cfg.AssetCacheDir = filepath.Join(t.TempDir(), "asset-cache")
 	if ttl > 0 {
 		cfg.DefaultTTL = ttl
 	}
@@ -501,15 +504,15 @@ func TestIntegration_Revocation(t *testing.T) {
 	}
 	delResp.Body.Close()
 
-	// 3. Public request returns 403 Forbidden
+	// 3. Public request returns 404 Not Found (or 403 Forbidden) since revoked share content is purged
 	respRevoked, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("request after revoke failed: %v", err)
 	}
 	defer respRevoked.Body.Close()
 
-	if respRevoked.StatusCode != http.StatusForbidden {
-		t.Fatalf("expected 403 Forbidden, got %d", respRevoked.StatusCode)
+	if respRevoked.StatusCode != http.StatusNotFound && respRevoked.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 404 Not Found or 403 Forbidden, got %d", respRevoked.StatusCode)
 	}
 }
 
@@ -579,3 +582,77 @@ func TestIntegration_ServerRestart(t *testing.T) {
 	env.CancelFn()
 	env.LocalServer.Close()
 }
+
+func TestIntegration_AssetCaching(t *testing.T) {
+	tempCacheDir, err := os.MkdirTemp("", "texlite-integration-cache-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempCacheDir)
+
+	var upstreamCalls atomic.Int32
+	assetBody := "console.log('vite-hashed-asset-content');"
+
+	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/assets/index-hash12345.js" {
+			upstreamCalls.Add(1)
+			w.Header().Set("Content-Type", "application/javascript")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(assetBody))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	dbPath := filepath.Join(t.TempDir(), "cache_test.db")
+	env := setupTestEnv(t, dbPath, customHandler, time.Hour)
+	defer env.Close()
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	assetURL := env.ShareServer.URL + "/assets/index-hash12345.js"
+	hostHeader := fmt.Sprintf("%s.%s", env.ShareID, env.BaseDomain)
+
+	// 1. First request: should be a cache MISS and hit local backend once
+	req1, _ := http.NewRequest(http.MethodGet, assetURL, nil)
+	req1.Host = hostHeader
+	resp1, err := client.Do(req1)
+	if err != nil {
+		t.Fatalf("first asset request failed: %v", err)
+	}
+	body1, _ := io.ReadAll(resp1.Body)
+	resp1.Body.Close()
+
+	if string(body1) != assetBody {
+		t.Fatalf("expected body %q, got %q", assetBody, body1)
+	}
+	if resp1.Header.Get("X-TexLite-Cache") != "MISS" {
+		t.Fatalf("expected X-TexLite-Cache: MISS on first request, got %q", resp1.Header.Get("X-TexLite-Cache"))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("expected 1 upstream call, got %d", upstreamCalls.Load())
+	}
+
+	// 2. Second request: should be a cache HIT and NOT touch the local backend!
+	req2, _ := http.NewRequest(http.MethodGet, assetURL, nil)
+	req2.Host = hostHeader
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("second asset request failed: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+
+	if string(body2) != assetBody {
+		t.Fatalf("expected body %q, got %q", assetBody, body2)
+	}
+	if resp2.Header.Get("X-TexLite-Cache") != "HIT" {
+		t.Fatalf("expected X-TexLite-Cache: HIT on second request, got %q", resp2.Header.Get("X-TexLite-Cache"))
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("expected still 1 upstream call on cache hit, got %d", upstreamCalls.Load())
+	}
+	if resp2.Header.Get("Cache-Control") != "public, max-age=31536000, immutable" {
+		t.Fatalf("expected immutable Cache-Control header, got %q", resp2.Header.Get("Cache-Control"))
+	}
+}
+

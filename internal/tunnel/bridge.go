@@ -6,6 +6,13 @@ import (
 	"sync"
 )
 
+var bridgeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024) // 64 KB buffer reduces syscalls and small chunks
+		return &b
+	},
+}
+
 // Bridge continuously copies data bidirectionally between connections a and b.
 // When either direction encounters EOF or an error, both connections are closed,
 // terminating both transfer loops without leaking goroutines.
@@ -22,13 +29,17 @@ func Bridge(a, b net.Conn) {
 	go func() {
 		defer wg.Done()
 		defer once.Do(closeBoth)
-		_, _ = io.Copy(a, b)
+		bufPtr := bridgeBufPool.Get().(*[]byte)
+		defer bridgeBufPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(a, b, *bufPtr)
 	}()
 
 	go func() {
 		defer wg.Done()
 		defer once.Do(closeBoth)
-		_, _ = io.Copy(b, a)
+		bufPtr := bridgeBufPool.Get().(*[]byte)
+		defer bridgeBufPool.Put(bufPtr)
+		_, _ = io.CopyBuffer(b, a, *bufPtr)
 	}()
 
 	wg.Wait()

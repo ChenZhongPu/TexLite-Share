@@ -1,14 +1,20 @@
 package registry
 
 import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/xtaci/smux"
+
+	"texlite-share/internal/protocol"
 )
 
-// TunnelSession holds an active tunnel session with its metadata and generation counter.
+// TunnelSession holds an active tunnel session with its metadata, generation counter, and pooled transport.
 type TunnelSession struct {
 	ShareID       string
 	Session       *smux.Session
@@ -16,13 +22,39 @@ type TunnelSession struct {
 	ExpiresAt     time.Time
 	Generation    uint64
 	ActiveStreams atomic.Int32
+	Transport     *http.Transport
+}
+
+// Close closes the underlying smux session and frees all pooled idle HTTP connections.
+func (s *TunnelSession) Close() {
+	if s.Transport != nil {
+		s.Transport.CloseIdleConnections()
+	}
+	if s.Session != nil {
+		_ = s.Session.Close()
+	}
+}
+
+// trackedConn wraps net.Conn to decrement stream counters upon close.
+type trackedConn struct {
+	net.Conn
+	registry *Registry
+	session  *TunnelSession
+	once     sync.Once
+}
+
+func (c *trackedConn) Close() error {
+	c.once.Do(func() {
+		c.registry.DecrStreams(c.session)
+	})
+	return c.Conn.Close()
 }
 
 // Registry manages in-memory active tunnel sessions.
 type Registry struct {
-	mu          sync.RWMutex
-	sessions    map[string]*TunnelSession
-	nextGen     uint64
+	mu           sync.RWMutex
+	sessions     map[string]*TunnelSession
+	nextGen      uint64
 	totalStreams atomic.Int32
 }
 
@@ -34,20 +66,21 @@ func NewRegistry() *Registry {
 }
 
 // Register adds or replaces a session for the specified shareID.
+// It initializes a reusable http.Transport for connection pooling across HTTP requests.
 // If an existing session is replaced, the old session is returned so the caller can close it asynchronously.
-func (r *Registry) Register(shareID string, session *smux.Session, expiresAt time.Time) (uint64, *smux.Session) {
+func (r *Registry) Register(shareID string, session *smux.Session, expiresAt time.Time) (uint64, *TunnelSession) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.nextGen++
 	gen := r.nextGen
 
-	var oldSession *smux.Session
+	var oldSession *TunnelSession
 	if existing, found := r.sessions[shareID]; found {
-		oldSession = existing.Session
+		oldSession = existing
 	}
 
-	r.sessions[shareID] = &TunnelSession{
+	sess := &TunnelSession{
 		ShareID:    shareID,
 		Session:    session,
 		Connected:  time.Now().UTC(),
@@ -55,6 +88,34 @@ func (r *Registry) Register(shareID string, session *smux.Session, expiresAt tim
 		Generation: gen,
 	}
 
+	if session != nil {
+		sess.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if sess.Session == nil || sess.Session.IsClosed() {
+					return nil, protocol.ErrTunnelOffline
+				}
+
+				stream, err := sess.Session.OpenStream()
+				if err != nil {
+					return nil, fmt.Errorf("failed to open smux stream: %w", err)
+				}
+
+				r.IncrStreams(sess)
+				return &trackedConn{
+					Conn:     stream,
+					registry: r,
+					session:  sess,
+				}, nil
+			},
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   50,
+			IdleConnTimeout:       90 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+
+	r.sessions[shareID] = sess
 	return gen, oldSession
 }
 
@@ -62,17 +123,19 @@ func (r *Registry) Register(shareID string, session *smux.Session, expiresAt tim
 // This prevents older disconnected sessions from inadvertently removing newer replacement sessions.
 func (r *Registry) Unregister(shareID string, gen uint64) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	existing, found := r.sessions[shareID]
 	if !found {
+		r.mu.Unlock()
 		return false
 	}
 
 	if existing.Generation == gen {
 		delete(r.sessions, shareID)
+		r.mu.Unlock()
+		existing.Close()
 		return true
 	}
+	r.mu.Unlock()
 	return false
 }
 
@@ -85,6 +148,15 @@ func (r *Registry) Get(shareID string) (*TunnelSession, bool) {
 	return sess, found
 }
 
+// UpdateExpiration updates the expiration time of an active session in the registry.
+func (r *Registry) UpdateExpiration(shareID string, expiresAt time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sess, found := r.sessions[shareID]; found {
+		sess.ExpiresAt = expiresAt
+	}
+}
+
 // Close closes and removes an active tunnel session for a shareID immediately.
 func (r *Registry) Close(shareID string) bool {
 	r.mu.Lock()
@@ -94,8 +166,8 @@ func (r *Registry) Close(shareID string) bool {
 	}
 	r.mu.Unlock()
 
-	if found && existing.Session != nil {
-		existing.Session.Close()
+	if found {
+		existing.Close()
 		return true
 	}
 	return false
@@ -112,9 +184,7 @@ func (r *Registry) CloseAll() {
 	r.mu.Unlock()
 
 	for _, s := range all {
-		if s.Session != nil {
-			s.Session.Close()
-		}
+		s.Close()
 	}
 }
 
@@ -136,8 +206,24 @@ func (r *Registry) IncrStreams(sess *TunnelSession) {
 	r.totalStreams.Add(1)
 }
 
-// DecrStreams decrements active stream counters.
+// DecrStreams decrements active stream counters, clamping at 0.
 func (r *Registry) DecrStreams(sess *TunnelSession) {
-	sess.ActiveStreams.Add(-1)
-	r.totalStreams.Add(-1)
+	for {
+		curr := sess.ActiveStreams.Load()
+		if curr <= 0 {
+			break
+		}
+		if sess.ActiveStreams.CompareAndSwap(curr, curr-1) {
+			break
+		}
+	}
+	for {
+		curr := r.totalStreams.Load()
+		if curr <= 0 {
+			break
+		}
+		if r.totalStreams.CompareAndSwap(curr, curr-1) {
+			break
+		}
+	}
 }

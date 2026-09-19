@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,8 +21,14 @@ import (
 	"texlite-share/internal/protocol"
 )
 
-// ErrTerminal indicates that the tunnel client received a non-retryable error (e.g., 401, 403, 410).
-var ErrTerminal = errors.New("terminal tunnel error")
+var (
+	// ErrTerminal indicates that the tunnel client received a non-retryable error.
+	ErrTerminal      = errors.New("terminal tunnel error")
+	ErrShareExpired  = fmt.Errorf("%w: share has expired on server (HTTP 410)", ErrTerminal)
+	ErrShareRevoked  = fmt.Errorf("%w: share has been revoked (HTTP 403)", ErrTerminal)
+	ErrShareNotFound = fmt.Errorf("%w: share not found on server (HTTP 404)", ErrTerminal)
+	ErrAuthFailed    = fmt.Errorf("%w: authentication failed (invalid token, HTTP 401)", ErrTerminal)
+)
 
 // ProbeLocalService checks whether the local destination service is alive and accepting connections.
 func ProbeLocalService(localAddr string, timeout time.Duration) error {
@@ -51,16 +56,10 @@ type CreatedShare struct {
 }
 
 // AutoCreateShare calls the server's POST /api/v1/shares to provision a share dynamically.
-func AutoCreateShare(ctx context.Context, serverURL, apiKey, ttl string) (*CreatedShare, error) {
+func AutoCreateShare(ctx context.Context, serverURL, apiKey string) (*CreatedShare, error) {
 	endpoint := strings.TrimRight(serverURL, "/") + "/api/v1/shares"
 
-	payload := map[string]string{}
-	if ttl != "" {
-		payload["ttl"] = ttl
-	}
-	bodyBytes, _ := json.Marshal(payload)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct create share request: %w", err)
 	}
@@ -103,6 +102,11 @@ func AutoRevokeShare(ctx context.Context, serverURL, shareID, token string) erro
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := ioReadAll(resp.Body, 256)
+		return fmt.Errorf("server returned status %d on revoke: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	return nil
 }
 
@@ -197,18 +201,24 @@ func connectAndServe(ctx context.Context, wsURL string, cfg *config.ClientConfig
 			switch resp.StatusCode {
 			case http.StatusUnauthorized:
 				slog.Error("tunnel authentication failed (invalid token)", "share_id", cfg.ShareID, "status", resp.StatusCode)
-				return fmt.Errorf("%w: invalid token (HTTP 401)", ErrTerminal)
+				return ErrAuthFailed
 			case http.StatusForbidden:
 				slog.Error("tunnel rejected (share revoked)", "share_id", cfg.ShareID, "status", resp.StatusCode)
-				return fmt.Errorf("%w: share revoked (HTTP 403)", ErrTerminal)
+				return ErrShareRevoked
 			case http.StatusGone:
 				slog.Error("tunnel rejected (share expired)", "share_id", cfg.ShareID, "status", resp.StatusCode)
-				return fmt.Errorf("%w: share expired (HTTP 410)", ErrTerminal)
+				return ErrShareExpired
+			case http.StatusNotFound:
+				slog.Error("tunnel rejected (share not found)", "share_id", cfg.ShareID, "status", resp.StatusCode)
+				return ErrShareNotFound
 			}
 		}
 		return fmt.Errorf("websocket dial failed: %w", err)
 	}
 	defer wsConn.Close(websocket.StatusNormalClosure, "client disconnecting")
+
+	// Set large read limit to support large multiplexed frames without throttling
+	wsConn.SetReadLimit(16 * 1024 * 1024)
 
 	if sub := wsConn.Subprotocol(); sub != protocol.SubprotocolName {
 		return fmt.Errorf("%w: expected %s, got %s", protocol.ErrProtocolMismatch, protocol.SubprotocolName, sub)

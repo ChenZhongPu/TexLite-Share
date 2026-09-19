@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"context"
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,9 +10,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
+	"texlite-share/internal/cache"
 	"texlite-share/internal/config"
 	"texlite-share/internal/database"
 	"texlite-share/internal/logging"
@@ -53,15 +53,32 @@ type ProxyHandler struct {
 	cfg      *config.ServerConfig
 	db       *database.DB
 	registry *registry.Registry
+	cache    *cache.AssetCache
 }
 
 // NewProxyHandler creates a new reverse proxy handler.
 func NewProxyHandler(cfg *config.ServerConfig, db *database.DB, reg *registry.Registry) *ProxyHandler {
+	var assetCache *cache.AssetCache
+	if cfg.AssetCacheDir != "" && cfg.AssetCacheMaxMB > 0 {
+		c, err := cache.New(cfg.AssetCacheDir, cfg.AssetCacheMaxMB)
+		if err != nil {
+			slog.Error("failed to initialize asset cache", "dir", cfg.AssetCacheDir, "error", err)
+		} else {
+			assetCache = c
+		}
+	}
+
 	return &ProxyHandler{
 		cfg:      cfg,
 		db:       db,
 		registry: reg,
+		cache:    assetCache,
 	}
+}
+
+// Cache returns the underlying AssetCache, or nil if disabled.
+func (p *ProxyHandler) Cache() *cache.AssetCache {
+	return p.cache
 }
 
 // ServeHTTP handles the incoming public HTTP/WebSocket request.
@@ -119,7 +136,17 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Check stream limits
+	// 5. Check static asset cache hit (serves directly from server disk without tunnel)
+	if p.cache != nil && isCacheableAsset(r.URL.Path) && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if cachedPath, found := p.cache.Get(r.URL.Path); found {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			w.Header().Set("X-TexLite-Cache", "HIT")
+			http.ServeFile(w, r, cachedPath)
+			return
+		}
+	}
+
+	// 6. Check stream limits
 	if p.cfg.MaxStreamsPerShare > 0 && int(session.ActiveStreams.Load()) >= p.cfg.MaxStreamsPerShare {
 		slog.Warn("max streams per share reached", "share_id", shareID)
 		http.Error(w, "Too Many Requests: share stream limit reached", http.StatusTooManyRequests)
@@ -132,34 +159,14 @@ func (p *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Reverse-proxy the request through smux
+	// 7. Reverse-proxy the request through smux
 	p.serveReverseProxy(w, r, session)
 }
 
 func (p *ProxyHandler) serveReverseProxy(w http.ResponseWriter, r *http.Request, sess *registry.TunnelSession) {
-	// Custom Transport where DialContext opens an smux stream
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			if sess.Session.IsClosed() {
-				return nil, protocol.ErrTunnelOffline
-			}
-
-			stream, err := sess.Session.OpenStream()
-			if err != nil {
-				return nil, fmt.Errorf("failed to open smux stream: %w", err)
-			}
-
-			p.registry.IncrStreams(sess)
-			return &trackedConn{
-				Conn:     stream,
-				registry: p.registry,
-				session:  sess,
-			}, nil
-		},
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 60 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
+	if sess.Transport == nil {
+		http.Error(w, "Service Unavailable: tunnel transport offline", http.StatusServiceUnavailable)
+		return
 	}
 
 	targetURL := &url.URL{
@@ -168,7 +175,7 @@ func (p *ProxyHandler) serveReverseProxy(w http.ResponseWriter, r *http.Request,
 	}
 
 	rp := httputil.NewSingleHostReverseProxy(targetURL)
-	rp.Transport = transport
+	rp.Transport = sess.Transport
 	rp.FlushInterval = -1 // Flush immediately for streaming and WebSocket support
 
 	originalDirector := rp.Director
@@ -207,20 +214,69 @@ func (p *ProxyHandler) serveReverseProxy(w http.ResponseWriter, r *http.Request,
 		_, _ = rw.Write([]byte("502 Bad Gateway: failed to communicate with local TexLite service"))
 	}
 
-	rp.ServeHTTP(w, r)
+	var capture *responseCapture
+	var writer http.ResponseWriter = w
+
+	isAsset := isCacheableAsset(r.URL.Path) && r.Method == http.MethodGet
+	if p.cache != nil && isAsset {
+		capture = &responseCapture{
+			ResponseWriter: w,
+			body:           &bytes.Buffer{},
+			maxCapture:     15 * 1024 * 1024,
+		}
+		writer = capture
+		w.Header().Set("X-TexLite-Cache", "MISS")
+	}
+
+	rp.ServeHTTP(writer, r)
+
+	if capture != nil && capture.statusCode == http.StatusOK && !capture.overflow && capture.body != nil && capture.body.Len() > 0 {
+		_ = p.cache.Put(r.URL.Path, capture.body.Bytes())
+	}
 }
 
-// trackedConn wraps net.Conn to decrement stream counters upon close.
-type trackedConn struct {
-	net.Conn
-	registry *registry.Registry
-	session  *registry.TunnelSession
-	once     sync.Once
+func isCacheableAsset(path string) bool {
+	clean := strings.TrimPrefix(path, "/")
+	if strings.HasPrefix(clean, "assets/") {
+		return true
+	}
+	switch clean {
+	case "logo.svg", "pdf-download.svg", "pdf-file.svg", "tex-file.svg", "favicon.ico":
+		return true
+	}
+	return false
 }
 
-func (c *trackedConn) Close() error {
-	c.once.Do(func() {
-		c.registry.DecrStreams(c.session)
-	})
-	return c.Conn.Close()
+type responseCapture struct {
+	http.ResponseWriter
+	statusCode int
+	body       *bytes.Buffer
+	maxCapture int
+	overflow   bool
+}
+
+func (c *responseCapture) WriteHeader(code int) {
+	c.statusCode = code
+	c.ResponseWriter.WriteHeader(code)
+}
+
+func (c *responseCapture) Write(b []byte) (int, error) {
+	if c.statusCode == 0 {
+		c.statusCode = http.StatusOK
+	}
+	if !c.overflow && c.body != nil {
+		if c.body.Len()+len(b) <= c.maxCapture {
+			c.body.Write(b)
+		} else {
+			c.overflow = true
+			c.body = nil
+		}
+	}
+	return c.ResponseWriter.Write(b)
+}
+
+func (c *responseCapture) Flush() {
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }

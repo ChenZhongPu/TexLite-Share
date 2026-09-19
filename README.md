@@ -156,48 +156,42 @@ Example JSON response:
 }
 ```
 
-### 4. Simplified Usage: One-Command Auto-Share (Recommended)
+### 4. Client Startup Modes
 
-When TexLite is running locally (e.g. `127.0.0.1:3000`), the client can automatically create a share, establish the tunnel, and clean up upon exit with a single command without needing manual flags:
+The client supports two distinct operating modes:
+
+#### Mode 1: Direct Start / Automatic Temporary Share (Default)
+When starting directly without `--share-id` or `--token`:
+1. Checks for and **proactively deletes any previous temporary share** from the server.
+2. Requests creation of a **new temporary share** (default 1-hour expiration).
+3. Automatically connects the reverse tunnel.
+4. On exit (Ctrl+C), automatically revokes the temporary share on the server.
 
 ```bash
-# Set your server URL (or leave default http://127.0.0.1:9000 for local dev)
-export TEXLITE_SERVER_URL=https://share.example.com
-export TEXLITE_SHARE_API_KEY=your-secret-key   # Optional if server requires API key
-
-# Run client (auto-probes TexLite, creates share, connects, revokes on Ctrl+C)
+# Run client directly
 ./bin/texlite-tunnel-client
 ```
 
 Terminal output:
 ```text
-============================================================
-           TexLite Share Tunnel is LIVE!
-============================================================
-  Share ID:    k83fx2m7pq4z7abc
-  Public URL:  https://k83fx2m7pq4z7abc.share.example.com
-  Expires:     2026-09-19T10:00:00Z
-  Target:      127.0.0.1:3000
-============================================================
-Share link copied to clipboard. Press Ctrl+C to stop sharing.
+===================================================================
+ ✨ TexLite Share is Live! (Automatic Temporary Mode)
+ 🔗 Public URL:   https://k83fx2m7pq4z7abc.share.example.com
+ 🆔 Share ID:     k83fx2m7pq4z7abc
+ 🎯 Local Target: http://127.0.0.1:3000 (TexLite verified, PID: 3352906)
+ ⏳ Expires At:   2026-09-18 16:15:00
+===================================================================
+Press Ctrl+C to stop sharing.
 ```
 
-**Features built into the client:**
-- **Pre-flight Probe**: Checks if local TexLite (`127.0.0.1:3000`) is responsive before contacting the server. If TexLite is offline, it exits immediately with an actionable warning.
-- **Auto-Revocation**: When you terminate the client (Ctrl+C / SIGINT / SIGTERM), it automatically calls the server to revoke the share immediately so the link expires at once.
-- **Environment Variables**:
-  - `TEXLITE_SERVER_URL`: Server address (default: `http://127.0.0.1:9000`)
-  - `TEXLITE_LOCAL_ADDR`: Local service address (default: `127.0.0.1:3000`)
-  - `TEXLITE_SHARE_API_KEY`: API Bearer token for server (if needed)
-  - `TEXLITE_SHARE_TTL`: Share lifetime (default: `24h`)
+#### Mode 2: Manual Connection Mode (Existing Share)
+When connecting to a pre-allocated share or permanent share, supply both `--share-id` and `--token`:
+- Connects directly without modifying or deleting temporary shares.
+- Does not auto-revoke the share upon exit.
 
----
-
-### 5. Manual / Advanced Tunnel Client Usage:
-If you want to manually connect to a pre-created share ID:
 ```bash
-go run ./cmd/texlite-tunnel-client \
-    --server-url http://127.0.0.1:9000 \
+./bin/texlite-tunnel-client \
+    --server-url https://share.example.com \
     --share-id k83fx2m7pq4z7abc \
     --token 4vQyW1... \
     --local-addr 127.0.0.1:3000
