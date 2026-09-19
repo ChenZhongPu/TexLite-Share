@@ -572,13 +572,20 @@ const dashboardHTML = `<!DOCTYPE html>
     </div>
 
     <div class="actions-panel">
-      <label>TTL Duration:</label>
-      <select id="ttl-select">
-        <option value="1h">1 hour</option>
-        <option value="168h" selected>7 days</option>
-        <option value="720h">30 days</option>
-        <option value="8760h">365 days</option>
-      </select>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <label for="custom-id-input" style="font-size: 13px; font-weight: 500;">Share ID:</label>
+        <input type="text" id="custom-id-input" placeholder="Random or custom (8-32 chars)" style="background: #0f172a; border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 6px; font-family: monospace; font-size: 13px; width: 230px;" />
+        <button type="button" onclick="generateRandomID()" style="background: #334155; color: #e2e8f0; padding: 8px 12px; font-size: 13px;" title="Generate random 16-character Share ID">🎲 Random</button>
+      </div>
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <label for="ttl-select" style="font-size: 13px; font-weight: 500;">TTL Duration:</label>
+        <select id="ttl-select">
+          <option value="1h">1 hour</option>
+          <option value="168h" selected>7 days</option>
+          <option value="720h">30 days</option>
+          <option value="8760h">365 days</option>
+        </select>
+      </div>
       <button onclick="createShare()">+ Create New Share</button>
     </div>
 
@@ -860,13 +867,29 @@ const dashboardHTML = `<!DOCTYPE html>
       }
     }
 
+    function generateRandomID() {
+      const chars = 'abcdefghijklmnopqrstuvwxyz234567';
+      let result = '';
+      const array = new Uint8Array(16);
+      window.crypto.getRandomValues(array);
+      for (let i = 0; i < 16; i++) {
+        result += chars[array[i] % chars.length];
+      }
+      document.getElementById('custom-id-input').value = result;
+    }
+
     async function createShare() {
       const ttl = document.getElementById('ttl-select').value;
+      const customID = document.getElementById('custom-id-input').value.trim();
+      const body = { ttl: ttl };
+      if (customID) {
+        body.id = customID;
+      }
       try {
         const res = await apiFetch('/api/v1/shares', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ttl: ttl })
+          body: JSON.stringify(body)
         });
         if (!res.ok) {
           const txt = await res.text();
@@ -874,12 +897,13 @@ const dashboardHTML = `<!DOCTYPE html>
           return;
         }
         const data = await res.json();
+        document.getElementById('custom-id-input').value = '';
         document.getElementById('m-id').textContent = data.id;
         document.getElementById('m-token').textContent = data.token;
         document.getElementById('m-url').textContent = data.publicUrl;
         document.getElementById('m-url').href = data.publicUrl;
         document.getElementById('m-cmd').textContent = 
-          'go run ./cmd/texlite-tunnel-client \\\n  --server-url ' + window.location.origin.replace(/:\d+$/, ':9000') + ' \\\n  --share-id ' + data.id + ' \\\n  --token ' + data.token + ' \\\n  --local-addr 127.0.0.1:3000';
+          'texlite-tunnel-client \\\n  --server-url ' + window.location.origin.replace(/:\d+$/, ':9000') + ' \\\n  --share-id ' + data.id + ' \\\n  --token ' + data.token + ' \\\n  --local-addr 127.0.0.1:3000';
         document.getElementById('modal').style.display = 'flex';
         refreshData();
       } catch (e) {

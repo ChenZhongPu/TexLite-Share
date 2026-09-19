@@ -249,3 +249,39 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 
 	_ = db
 }
+
+func TestAdminCreateShareWithCustomID(t *testing.T) {
+	adminHandler, _, _, _ := setupTestAdmin(t, "admin-key-123")
+
+	// 1. Create share with custom ID containing hyphens
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(`{"id":"paper-2026-demo","ttl":"2h"}`))
+	createReq.Header.Set("Authorization", "Bearer admin-key-123")
+	createRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for custom ID, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	var created api.CreateShareResponse
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if created.ID != "paper-2026-demo" {
+		t.Fatalf("expected custom ID 'paper-2026-demo', got %q", created.ID)
+	}
+	if created.PublicURL != "http://paper-2026-demo.share.local" {
+		t.Fatalf("expected public URL 'http://paper-2026-demo.share.local', got %q", created.PublicURL)
+	}
+
+	// 2. Attempting to create duplicate active custom ID should fail with 409 Conflict
+	dupReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(`{"id":"paper-2026-demo","ttl":"2h"}`))
+	dupReq.Header.Set("Authorization", "Bearer admin-key-123")
+	dupRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(dupRec, dupReq)
+
+	if dupRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict for duplicate active ID, got %d: %s", dupRec.Code, dupRec.Body.String())
+	}
+}
+

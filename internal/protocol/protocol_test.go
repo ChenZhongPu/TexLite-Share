@@ -37,7 +37,9 @@ func TestValidateShareID_EdgeCases(t *testing.T) {
 		{"short", false},
 		{"waytoolongstringexceedingthirtytwocharacters1234567890", false},
 		{"k83fx2_abc", false},
-		{"k83fx2-abc", false},
+		{"k83fx2-abc", true},
+		{"-k83fx2abc", false},
+		{"k83fx2abc-", false},
 		{"k83FX2m7pq4z7abc", false}, // uppercase rejected
 		{"../etc/passwd", false},
 		{"id with space", false},

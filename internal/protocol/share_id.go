@@ -20,16 +20,20 @@ func GenerateShareID() (string, error) {
 }
 
 // ValidateShareID strictly verifies that the share ID is safe, well-formed,
-// and consists exclusively of lowercase alphanumeric characters.
+// and consists exclusively of lowercase alphanumeric characters and internal hyphens.
 func ValidateShareID(id string) error {
 	if len(id) < 8 || len(id) > 32 {
 		return fmt.Errorf("%w: length must be between 8 and 32 characters", ErrInvalidShare)
+	}
+	if id[0] == '-' || id[len(id)-1] == '-' {
+		return fmt.Errorf("%w: cannot start or end with a hyphen", ErrInvalidShare)
 	}
 	for i := 0; i < len(id); i++ {
 		c := id[i]
 		isLowerAlpha := c >= 'a' && c <= 'z'
 		isDigit := c >= '0' && c <= '9'
-		if !isLowerAlpha && !isDigit {
+		isHyphen := c == '-'
+		if !isLowerAlpha && !isDigit && !isHyphen {
 			return fmt.Errorf("%w: contains invalid character '%c'", ErrInvalidShare, c)
 		}
 	}
