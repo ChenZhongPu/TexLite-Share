@@ -51,6 +51,12 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 	if !strings.Contains(dashRec.Body.String(), "TexLite Share") {
 		t.Fatal("dashboard HTML content missing expected title")
 	}
+	if !strings.Contains(dashRec.Body.String(), "footer-version") {
+		t.Fatal("dashboard HTML content missing footer-version element")
+	}
+	if !strings.Contains(dashRec.Body.String(), "Active Streams / Limit") {
+		t.Fatal("dashboard HTML content missing Active Streams / Limit")
+	}
 
 	// 2. Unauthenticated API request -> 401 Unauthorized
 	unauthReq := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
@@ -75,6 +81,9 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 	}
 	if stats.MaxActiveShares != 50 {
 		t.Fatalf("expected MaxActiveShares 50, got %d", stats.MaxActiveShares)
+	}
+	if stats.ServerVersion == "" {
+		t.Fatalf("expected non-empty ServerVersion in stats")
 	}
 
 	// 4. Create Share via Admin API

@@ -14,6 +14,7 @@ import (
 	"texlite-share/internal/database"
 	"texlite-share/internal/protocol"
 	"texlite-share/internal/registry"
+	"texlite-share/internal/version"
 )
 
 // AdminHandler handles management APIs and serves the internal Web Dashboard.
@@ -57,6 +58,7 @@ type StatsView struct {
 	BaseDomain         string         `json:"baseDomain"`
 	TotalRevoked       int            `json:"totalRevoked"`
 	RevokedByCountry   map[string]int `json:"revokedByCountry,omitempty"`
+	ServerVersion      string         `json:"serverVersion,omitempty"`
 }
 
 // ConfigItemView represents a configurable parameter's specification and current value.
@@ -178,6 +180,7 @@ func (h *AdminHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		BaseDomain:         h.cfg.BaseDomain,
 		TotalRevoked:       totalRevoked,
 		RevokedByCountry:   revokedByCountry,
+		ServerVersion:      version.Info("TexLite Share Server"),
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -476,7 +479,8 @@ func maskKey(k string) string {
 func (h *AdminHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(dashboardHTML))
+	html := strings.ReplaceAll(dashboardHTML, "{{SERVER_VERSION}}", version.Info("TexLite Share Server"))
+	_, _ = w.Write([]byte(html))
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -551,8 +555,8 @@ const dashboardHTML = `<!DOCTYPE html>
         <div class="value" id="tunnels-val">-</div>
       </div>
       <div class="card">
-        <h3>Active Streams</h3>
-        <div class="value" id="streams-val">-</div>
+        <h3>Active Streams / Limit</h3>
+        <div class="value" id="streams-val">- / -</div>
       </div>
       <div class="card">
         <h3>Base Domain</h3>
@@ -585,7 +589,7 @@ const dashboardHTML = `<!DOCTYPE html>
           <tr>
             <th>Share ID</th>
             <th>Tunnel State</th>
-            <th>Streams</th>
+            <th>Streams (Active / Max)</th>
             <th>Client IP &amp; Country</th>
             <th>Expires At</th>
             <th>Public URL</th>
@@ -597,6 +601,10 @@ const dashboardHTML = `<!DOCTYPE html>
         </tbody>
       </table>
     </div>
+
+    <footer style="margin-top: 36px; padding: 18px 0 8px; border-top: 1px solid var(--border); text-align: center; font-size: 12px; color: var(--text-muted);">
+      <span id="footer-version">{{SERVER_VERSION}}</span>
+    </footer>
   </div>
 
   <div id="modal">
@@ -733,9 +741,17 @@ const dashboardHTML = `<!DOCTYPE html>
         cachedStats = stats;
         document.getElementById('quota-val').textContent = stats.activeShares + ' / ' + stats.maxActiveShares;
         document.getElementById('tunnels-val').textContent = stats.onlineTunnels;
-        document.getElementById('streams-val').textContent = stats.totalStreams;
+        if (stats.maxTotalStreams > 0) {
+          document.getElementById('streams-val').textContent = stats.totalStreams + ' / ' + stats.maxTotalStreams;
+        } else {
+          document.getElementById('streams-val').textContent = stats.totalStreams;
+        }
         document.getElementById('domain-val').textContent = stats.baseDomain;
         document.getElementById('revoked-val').textContent = stats.totalRevoked || 0;
+        if (stats.serverVersion) {
+          const fv = document.getElementById('footer-version');
+          if (fv) fv.textContent = stats.serverVersion;
+        }
 
         const sharesRes = await apiFetch('/api/v1/shares');
         if (!sharesRes.ok) return;
@@ -763,9 +779,14 @@ const dashboardHTML = `<!DOCTYPE html>
           let actionBtn = '<button class="danger" onclick="revokeShare(\'' + encId + '\')">Revoke</button>';
           let stateTag = isOnline ? '<span class="online-indicator"></span>Online' : '<span class="offline-indicator"></span>Offline';
 
+          let streamText = String(s.activeStreams || 0);
+          if (cachedStats && cachedStats.maxStreamsPerShare > 0) {
+            streamText += ' / ' + cachedStats.maxStreamsPerShare;
+          }
+
           tr.innerHTML = '<td class="mono"><strong>' + safeId + '</strong></td>' +
             '<td>' + stateTag + '</td>' +
-            '<td>' + (s.activeStreams || 0) + '</td>' +
+            '<td>' + streamText + '</td>' +
             '<td><div class="mono">' + safeClientIp + '</div><div style="font-size:12px; color:var(--text-muted); margin-top:2px;">' + safeCountry + '</div></td>' +
             '<td>' +
               '<div>' + escapeHtml(expires) + '</div>' +
