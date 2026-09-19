@@ -112,7 +112,16 @@ fi
 
 # 7. Extract client binary
 info "Extracting ${BINARY_NAME}..."
-tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR" "$BINARY_NAME" || error "Failed to extract $BINARY_NAME from archive."
+tar -xzf "$TMP_DIR/$ARCHIVE_NAME" -C "$TMP_DIR" || error "Failed to extract $ARCHIVE_NAME."
+
+if [ ! -f "$TMP_DIR/$BINARY_NAME" ]; then
+  FOUND_BIN="$(find "$TMP_DIR" -name "$BINARY_NAME" -type f 2>/dev/null | head -n 1 || true)"
+  if [ -n "$FOUND_BIN" ] && [ -f "$FOUND_BIN" ]; then
+    mv "$FOUND_BIN" "$TMP_DIR/$BINARY_NAME"
+  else
+    error "Failed to locate $BINARY_NAME in extracted archive."
+  fi
+fi
 
 # 8. Install to target directory
 mkdir -p "$INSTALL_DIR"
@@ -161,7 +170,7 @@ echo -e "   ${BLUE}texlite-tunnel-client --server-url https://share.yourdomain.c
 echo -e "   *(Generates a temporary share URL and automatically cleans up upon exit)*"
 echo
 echo -e "${BOLD}2. Fixed Subdomain Mode (Pre-configured Share):${NC}"
-echo -e "   ${BLUE}texlite-tunnel-client --server-url https://share.yourdomain.com \\${NC}"
+echo -e "   ${BLUE}texlite-tunnel-client --server-url https://share.yourdomain.com \\\\${NC}"
 echo -e "       ${BLUE}--share-id <YOUR_SHARE_ID> --token <YOUR_TOKEN>${NC}"
 echo
 echo -e "${BOLD}3. View all available options:${NC}"

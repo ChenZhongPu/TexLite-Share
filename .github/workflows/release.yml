@@ -87,7 +87,7 @@ jobs:
             if [ "$GOOS" = "windows" ]; then
               (cd "$STAGE_DIR" && zip -r "../../texlite-share_${VERSION}_${GOOS}_${GOARCH}.zip" .)
             else
-              tar -czvf "dist/texlite-share_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C "$STAGE_DIR" .
+              (cd "$STAGE_DIR" && tar -czvf "../../texlite-share_${VERSION}_${GOOS}_${GOARCH}.tar.gz" *)
             fi
           done
 
