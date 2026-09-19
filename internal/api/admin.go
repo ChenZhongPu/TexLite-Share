@@ -327,8 +327,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--listen",
 			EnvVar:       "TEXLITE_LISTEN_ADDR",
-			Category:     "网络与端口",
-			Description:  "公共服务监听地址（处理客户端 WebSocket 隧道连接与外部访客子域名 HTTP/WS 请求）",
+			Category:     "Network",
+			Description:  "Public server address for visitor HTTP/WS traffic and tunnel client connections",
 			DefaultValue: def.ListenAddr,
 			ActualValue:  cfg.ListenAddr,
 			IsCustom:     cfg.ListenAddr != def.ListenAddr,
@@ -336,8 +336,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--admin-listen",
 			EnvVar:       "TEXLITE_ADMIN_LISTEN_ADDR",
-			Category:     "网络与端口",
-			Description:  "管理后台专属监听地址（提供 Web 管理面板及管理员专属管理 API，留空则禁用）",
+			Category:     "Network",
+			Description:  "Dedicated localhost admin port serving Web Dashboard and management APIs (empty to disable)",
 			DefaultValue: def.AdminListenAddr,
 			ActualValue:  cfg.AdminListenAddr,
 			IsCustom:     cfg.AdminListenAddr != def.AdminListenAddr,
@@ -345,8 +345,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--base-domain",
 			EnvVar:       "TEXLITE_BASE_DOMAIN",
-			Category:     "网络与端口",
-			Description:  "公网共享基础泛域名（用于为每个 Share 动态分配二级子域名）",
+			Category:     "Network",
+			Description:  "Base wildcard domain used for dynamically allocating public share subdomains",
 			DefaultValue: def.BaseDomain,
 			ActualValue:  cfg.BaseDomain,
 			IsCustom:     cfg.BaseDomain != def.BaseDomain,
@@ -354,8 +354,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--max-shares",
 			EnvVar:       "TEXLITE_MAX_SHARES",
-			Category:     "容量与配额",
-			Description:  "全站允许同时存在的最大活跃 Share / Tunnel 总数量（超额后拒绝新创建）",
+			Category:     "Capacity",
+			Description:  "Maximum active non-expired shares allowed server-wide (rejects new shares when full)",
 			DefaultValue: fmt.Sprintf("%d", def.MaxActiveShares),
 			ActualValue:  fmt.Sprintf("%d", cfg.MaxActiveShares),
 			IsCustom:     cfg.MaxActiveShares != def.MaxActiveShares,
@@ -363,8 +363,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--max-shares-per-ip",
 			EnvVar:       "-",
-			Category:     "容量与配额",
-			Description:  "单个客户端 IP 允许同时保有的最大活跃 Share 数量（防单一来源挤占资源）",
+			Category:     "Capacity",
+			Description:  "Maximum concurrent active shares allowed per client IP address",
 			DefaultValue: fmt.Sprintf("%d", def.MaxSharesPerIP),
 			ActualValue:  fmt.Sprintf("%d", cfg.MaxSharesPerIP),
 			IsCustom:     cfg.MaxSharesPerIP != def.MaxSharesPerIP,
@@ -372,8 +372,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--rate-limit-per-day",
 			EnvVar:       "TEXLITE_RATE_LIMIT_PER_DAY",
-			Category:     "限流防刷",
-			Description:  "单个客户端 IP 每天允许创建 Share 的最大请求次数（0 表示不限）",
+			Category:     "Rate Limit",
+			Description:  "Maximum share creations allowed per day per client IP address (0 to disable)",
 			DefaultValue: fmt.Sprintf("%d", def.RateLimitPerDay),
 			ActualValue:  fmt.Sprintf("%d", cfg.RateLimitPerDay),
 			IsCustom:     cfg.RateLimitPerDay != def.RateLimitPerDay,
@@ -381,8 +381,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--default-ttl",
 			EnvVar:       "TEXLITE_DEFAULT_TTL",
-			Category:     "生命周期",
-			Description:  "普通用户创建临时 Share 时的默认生存周期时长（管理员可在面板中延长或自定义）",
+			Category:     "Lifecycle",
+			Description:  "Default time-to-live expiration duration for newly created public shares",
 			DefaultValue: def.DefaultTTL.String(),
 			ActualValue:  cfg.DefaultTTL.String(),
 			IsCustom:     cfg.DefaultTTL != def.DefaultTTL,
@@ -390,8 +390,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--sweep-interval",
 			EnvVar:       "-",
-			Category:     "生命周期",
-			Description:  "后台自动清理过期 Share 及断开超时连接的扫描周期",
+			Category:     "Lifecycle",
+			Description:  "Background sweep interval for cleaning expired shares and closed sessions",
 			DefaultValue: def.SweepInterval.String(),
 			ActualValue:  cfg.SweepInterval.String(),
 			IsCustom:     cfg.SweepInterval != def.SweepInterval,
@@ -399,8 +399,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--max-streams-per-share",
 			EnvVar:       "-",
-			Category:     "流控并发",
-			Description:  "单个 Share 内部允许的最大并发 HTTP/WS 多路复用子流数",
+			Category:     "Streams",
+			Description:  "Maximum concurrent multiplexed HTTP/WS streams per individual share",
 			DefaultValue: fmt.Sprintf("%d", def.MaxStreamsPerShare),
 			ActualValue:  fmt.Sprintf("%d", cfg.MaxStreamsPerShare),
 			IsCustom:     cfg.MaxStreamsPerShare != def.MaxStreamsPerShare,
@@ -408,8 +408,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--max-total-streams",
 			EnvVar:       "-",
-			Category:     "流控并发",
-			Description:  "全站所有 Share 汇总允许的最大并发多路复用子流总数",
+			Category:     "Streams",
+			Description:  "Maximum total concurrent multiplexed streams across all active shares",
 			DefaultValue: fmt.Sprintf("%d", def.MaxTotalStreams),
 			ActualValue:  fmt.Sprintf("%d", cfg.MaxTotalStreams),
 			IsCustom:     cfg.MaxTotalStreams != def.MaxTotalStreams,
@@ -417,8 +417,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--db",
 			EnvVar:       "TEXLITE_DB_PATH",
-			Category:     "数据存储",
-			Description:  "SQLite 数据库持久化存储文件路径（启用 WAL 模式）",
+			Category:     "Storage",
+			Description:  "Path to persistent SQLite database file (WAL mode enabled)",
 			DefaultValue: def.DBPath,
 			ActualValue:  cfg.DBPath,
 			IsCustom:     cfg.DBPath != def.DBPath,
@@ -426,8 +426,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--asset-cache-dir",
 			EnvVar:       "TEXLITE_ASSET_CACHE_DIR",
-			Category:     "资源缓存",
-			Description:  "前端静态资源本地缓存目录（留空表示不开启本地文件缓存）",
+			Category:     "Cache",
+			Description:  "Directory path for static asset caching (empty to disable cache)",
 			DefaultValue: def.AssetCacheDir,
 			ActualValue:  cfg.AssetCacheDir,
 			IsCustom:     cfg.AssetCacheDir != def.AssetCacheDir,
@@ -435,8 +435,8 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--asset-cache-max-mb",
 			EnvVar:       "-",
-			Category:     "资源缓存",
-			Description:  "静态资源缓存占用的最大磁盘空间（MB，采用 LRU 自动淘汰）",
+			Category:     "Cache",
+			Description:  "Maximum disk space in MB for static asset cache (LRU eviction)",
 			DefaultValue: fmt.Sprintf("%d MB", def.AssetCacheMaxMB),
 			ActualValue:  fmt.Sprintf("%d MB", cfg.AssetCacheMaxMB),
 			IsCustom:     cfg.AssetCacheMaxMB != def.AssetCacheMaxMB,
@@ -444,18 +444,18 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 		{
 			Key:          "--admin-api-key",
 			EnvVar:       "TEXLITE_ADMIN_API_KEY",
-			Category:     "安全鉴权",
-			Description:  "管理后台 Web 页面及管理 API 的访问密钥（密钥已掩码保护）",
-			DefaultValue: "(未配置)",
+			Category:     "Security",
+			Description:  "Secret key protecting admin dashboard and management endpoints",
+			DefaultValue: "(None)",
 			ActualValue:  maskKey(cfg.AdminAPIKey),
 			IsCustom:     cfg.AdminAPIKey != def.AdminAPIKey,
 		},
 		{
 			Key:          "--create-api-key",
 			EnvVar:       "TEXLITE_CREATE_API_KEY",
-			Category:     "安全鉴权",
-			Description:  "限制创建 Share 权限的公共 API 密钥（留空则允许公开免密创建）",
-			DefaultValue: "(未配置 / 允许公开免密)",
+			Category:     "Security",
+			Description:  "Secret key restricting public share creation (empty allows open creation)",
+			DefaultValue: "(None / Open)",
 			ActualValue:  maskKey(cfg.CreateAPIKey),
 			IsCustom:     cfg.CreateAPIKey != def.CreateAPIKey,
 		},
@@ -465,7 +465,7 @@ func (h *AdminHandler) getConfigItems() []ConfigItemView {
 
 func maskKey(k string) string {
 	if k == "" {
-		return "(未配置 / 空)"
+		return "(None / Empty)"
 	}
 	if len(k) <= 4 {
 		return "******"
@@ -536,7 +536,7 @@ const dashboardHTML = `<!DOCTYPE html>
     <header>
       <h1>TexLite Share <span class="badge-local">Admin Port (Localhost)</span></h1>
       <div style="display:flex; gap:8px; align-items:center;">
-        <button onclick="openConfigModal()" style="background:#334155; color:#e2e8f0; font-weight:500;">⚙️ 系统配置</button>
+        <button onclick="openConfigModal()" style="background:#334155; color:#e2e8f0; font-weight:500;">⚙️ Configuration</button>
         <button onclick="refreshData()">↻ Refresh</button>
       </div>
     </header>
@@ -641,18 +641,20 @@ const dashboardHTML = `<!DOCTYPE html>
         <button onclick="closeRevokedModal()">Close</button>
       </div>
     </div>
+  </div>
+
   <div id="config-modal">
     <div id="config-modal-box">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:12px;">
         <div style="display:flex; align-items:center; gap:10px;">
-          <h2 style="margin:0; font-size:18px; color:var(--text);">⚙️ 服务器参数与运行配置 (Server Configuration)</h2>
-          <span id="cfg-custom-badge" style="background:#0369a1; color:#e0f2fe; padding:2px 8px; border-radius:12px; font-size:11px;">加载中...</span>
+          <h2 style="margin:0; font-size:18px; color:var(--text);">⚙️ Server Configuration</h2>
+          <span id="cfg-custom-badge" style="background:#0369a1; color:#e0f2fe; padding:2px 8px; border-radius:12px; font-size:11px;">Loading...</span>
         </div>
         <button style="background:transparent; color:var(--text-muted); font-size:18px; padding:2px 8px; border:none; cursor:pointer;" onclick="closeConfigModal()">✕</button>
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;">
-        <input type="text" id="cfg-search" placeholder="🔍 搜索参数名、环境变量或说明..." oninput="filterConfigRows()" style="flex:1; min-width:240px; background:#0f172a; color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:6px; font-size:13px;">
+        <input type="text" id="cfg-search" placeholder="🔍 Search by flag, env variable, category, or description..." oninput="filterConfigRows()" style="flex:1; min-width:240px; background:#0f172a; color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:6px; font-size:13px;">
         <div style="font-size:12px; color:var(--text-muted);" id="cfg-summary-text"></div>
       </div>
 
@@ -660,23 +662,23 @@ const dashboardHTML = `<!DOCTYPE html>
         <table style="margin-top:0; border-collapse:collapse; width:100%;">
           <thead style="position:sticky; top:0; background:#1e293b; z-index:1;">
             <tr>
-              <th style="padding:10px 12px;">参数名 / 环境变量</th>
-              <th style="padding:10px 12px; width:90px;">类别</th>
-              <th style="padding:10px 12px;">说明</th>
-              <th style="padding:10px 12px;">默认值 (Default)</th>
-              <th style="padding:10px 12px;">实际取值 (Actual)</th>
-              <th style="padding:10px 12px; width:70px; text-align:center;">状态</th>
+              <th style="padding:10px 12px;">Flag / Environment Variable</th>
+              <th style="padding:10px 12px; width:100px;">Category</th>
+              <th style="padding:10px 12px;">Description</th>
+              <th style="padding:10px 12px;">Default Value</th>
+              <th style="padding:10px 12px;">Runtime Value</th>
+              <th style="padding:10px 12px; width:80px; text-align:center;">Status</th>
             </tr>
           </thead>
           <tbody id="config-tbody">
-            <tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">正在加载参数列表...</td></tr>
+            <tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">Loading configuration parameters...</td></tr>
           </tbody>
         </table>
       </div>
 
       <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
-        <span style="font-size:12px; color:var(--text-muted);">绿色高亮表示其实际取值与默认值不同。密钥参数已做掩码防护。</span>
-        <button onclick="closeConfigModal()">关闭</button>
+        <span style="font-size:12px; color:var(--text-muted);">Green highlighting indicates values customized from defaults. Sensitive keys are securely masked.</span>
+        <button onclick="closeConfigModal()">Close</button>
       </div>
     </div>
   </div>
@@ -995,11 +997,11 @@ const dashboardHTML = `<!DOCTYPE html>
           if (res.ok) {
             allConfigItems = await res.json();
           } else {
-            document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">加载配置失败: ' + res.status + '</td></tr>';
+            document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">Failed to load configuration: ' + res.status + '</td></tr>';
             return;
           }
         } catch (e) {
-          document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">网络错误: ' + e + '</td></tr>';
+          document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">Network error: ' + e + '</td></tr>';
           return;
         }
       }
@@ -1033,8 +1035,8 @@ const dashboardHTML = `<!DOCTYPE html>
         const actualValHtml = '<code style="' + actualStyle + '">' + escapeHtml(item.actualValue) + '</code>';
 
         const statusBadge = item.isCustom
-          ? '<span style="background:#065f46; color:#a7f3d0; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; white-space:nowrap;">自定义</span>'
-          : '<span style="background:#334155; color:#94a3b8; padding:2px 8px; border-radius:10px; font-size:11px; white-space:nowrap;">默认</span>';
+          ? '<span style="background:#065f46; color:#a7f3d0; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; white-space:nowrap;">Customized</span>'
+          : '<span style="background:#334155; color:#94a3b8; padding:2px 8px; border-radius:10px; font-size:11px; white-space:nowrap;">Default</span>';
 
         tr.innerHTML =
           '<td>' + keyHtml + '</td>' +
@@ -1050,14 +1052,14 @@ const dashboardHTML = `<!DOCTYPE html>
       if (customCount > 0) {
         badge.style.background = '#065f46';
         badge.style.color = '#a7f3d0';
-        badge.textContent = customCount + ' 项已自定义';
+        badge.textContent = customCount + (customCount === 1 ? ' Customized Parameter' : ' Customized Parameters');
       } else {
         badge.style.background = '#334155';
         badge.style.color = '#94a3b8';
-        badge.textContent = '全部使用默认值';
+        badge.textContent = 'All Defaults';
       }
 
-      document.getElementById('cfg-summary-text').textContent = '共 ' + items.length + ' 项参数';
+      document.getElementById('cfg-summary-text').textContent = items.length + ' Total Parameters';
     }
 
     function filterConfigRows() {
