@@ -6,3 +6,5 @@ dist/
 *.db-shm
 .DS_Store
 TexLite Share Tunnel — Phase 1 Development Specification.md
+update-server.sh
+website/
