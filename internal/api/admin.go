@@ -59,6 +59,17 @@ type StatsView struct {
 	RevokedByCountry   map[string]int `json:"revokedByCountry,omitempty"`
 }
 
+// ConfigItemView represents a configurable parameter's specification and current value.
+type ConfigItemView struct {
+	Key          string `json:"key"`
+	EnvVar       string `json:"envVar,omitempty"`
+	Category     string `json:"category"`
+	Description  string `json:"description"`
+	DefaultValue string `json:"defaultValue"`
+	ActualValue  string `json:"actualValue"`
+	IsCustom     bool   `json:"isCustom"`
+}
+
 func (h *AdminHandler) checkAuth(r *http.Request) bool {
 	requiredKey := h.cfg.AdminAPIKey
 	if requiredKey == "" {
@@ -90,9 +101,13 @@ func (h *AdminHandler) checkAuth(r *http.Request) bool {
 func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
-	// 1. Always serve the dashboard HTML on root/admin routes
-	if path == "/" || path == "/admin" {
-		if key := r.URL.Query().Get("key"); key != "" && secureCompare(key, h.cfg.CreateAPIKey) {
+	// 1. Always serve the dashboard HTML on root/admin/config routes
+	if path == "/" || path == "/admin" || path == "/config" || path == "/admin/config" {
+		requiredKey := h.cfg.AdminAPIKey
+		if requiredKey == "" {
+			requiredKey = h.cfg.CreateAPIKey
+		}
+		if key := r.URL.Query().Get("key"); key != "" && (requiredKey == "" || secureCompare(key, requiredKey)) {
 			secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 			http.SetCookie(w, &http.Cookie{
 				Name:     "texlite_admin_key",
@@ -117,6 +132,8 @@ func (h *AdminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/api/v1/stats" && r.Method == http.MethodGet:
 		h.handleStats(w, r)
+	case (path == "/api/v1/config" || path == "/api/v1/settings") && r.Method == http.MethodGet:
+		h.handleConfig(w, r)
 	case path == "/api/v1/shares" && r.Method == http.MethodGet:
 		h.handleListShares(w, r)
 	case path == "/api/v1/shares" && r.Method == http.MethodPost:
@@ -296,6 +313,166 @@ func parseDateTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("expected ISO 8601 or YYYY-MM-DDTHH:MM")
 }
 
+func (h *AdminHandler) handleConfig(w http.ResponseWriter, r *http.Request) {
+	items := h.getConfigItems()
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(items)
+}
+
+func (h *AdminHandler) getConfigItems() []ConfigItemView {
+	def := config.DefaultServerConfig()
+	cfg := h.cfg
+
+	items := []ConfigItemView{
+		{
+			Key:          "--listen",
+			EnvVar:       "TEXLITE_LISTEN_ADDR",
+			Category:     "网络与端口",
+			Description:  "公共服务监听地址（处理客户端 WebSocket 隧道连接与外部访客子域名 HTTP/WS 请求）",
+			DefaultValue: def.ListenAddr,
+			ActualValue:  cfg.ListenAddr,
+			IsCustom:     cfg.ListenAddr != def.ListenAddr,
+		},
+		{
+			Key:          "--admin-listen",
+			EnvVar:       "TEXLITE_ADMIN_LISTEN_ADDR",
+			Category:     "网络与端口",
+			Description:  "管理后台专属监听地址（提供 Web 管理面板及管理员专属管理 API，留空则禁用）",
+			DefaultValue: def.AdminListenAddr,
+			ActualValue:  cfg.AdminListenAddr,
+			IsCustom:     cfg.AdminListenAddr != def.AdminListenAddr,
+		},
+		{
+			Key:          "--base-domain",
+			EnvVar:       "TEXLITE_BASE_DOMAIN",
+			Category:     "网络与端口",
+			Description:  "公网共享基础泛域名（用于为每个 Share 动态分配二级子域名）",
+			DefaultValue: def.BaseDomain,
+			ActualValue:  cfg.BaseDomain,
+			IsCustom:     cfg.BaseDomain != def.BaseDomain,
+		},
+		{
+			Key:          "--max-shares",
+			EnvVar:       "TEXLITE_MAX_SHARES",
+			Category:     "容量与配额",
+			Description:  "全站允许同时存在的最大活跃 Share / Tunnel 总数量（超额后拒绝新创建）",
+			DefaultValue: fmt.Sprintf("%d", def.MaxActiveShares),
+			ActualValue:  fmt.Sprintf("%d", cfg.MaxActiveShares),
+			IsCustom:     cfg.MaxActiveShares != def.MaxActiveShares,
+		},
+		{
+			Key:          "--max-shares-per-ip",
+			EnvVar:       "-",
+			Category:     "容量与配额",
+			Description:  "单个客户端 IP 允许同时保有的最大活跃 Share 数量（防单一来源挤占资源）",
+			DefaultValue: fmt.Sprintf("%d", def.MaxSharesPerIP),
+			ActualValue:  fmt.Sprintf("%d", cfg.MaxSharesPerIP),
+			IsCustom:     cfg.MaxSharesPerIP != def.MaxSharesPerIP,
+		},
+		{
+			Key:          "--rate-limit-per-day",
+			EnvVar:       "TEXLITE_RATE_LIMIT_PER_DAY",
+			Category:     "限流防刷",
+			Description:  "单个客户端 IP 每天允许创建 Share 的最大请求次数（0 表示不限）",
+			DefaultValue: fmt.Sprintf("%d", def.RateLimitPerDay),
+			ActualValue:  fmt.Sprintf("%d", cfg.RateLimitPerDay),
+			IsCustom:     cfg.RateLimitPerDay != def.RateLimitPerDay,
+		},
+		{
+			Key:          "--default-ttl",
+			EnvVar:       "TEXLITE_DEFAULT_TTL",
+			Category:     "生命周期",
+			Description:  "普通用户创建临时 Share 时的默认生存周期时长（管理员可在面板中延长或自定义）",
+			DefaultValue: def.DefaultTTL.String(),
+			ActualValue:  cfg.DefaultTTL.String(),
+			IsCustom:     cfg.DefaultTTL != def.DefaultTTL,
+		},
+		{
+			Key:          "--sweep-interval",
+			EnvVar:       "-",
+			Category:     "生命周期",
+			Description:  "后台自动清理过期 Share 及断开超时连接的扫描周期",
+			DefaultValue: def.SweepInterval.String(),
+			ActualValue:  cfg.SweepInterval.String(),
+			IsCustom:     cfg.SweepInterval != def.SweepInterval,
+		},
+		{
+			Key:          "--max-streams-per-share",
+			EnvVar:       "-",
+			Category:     "流控并发",
+			Description:  "单个 Share 内部允许的最大并发 HTTP/WS 多路复用子流数",
+			DefaultValue: fmt.Sprintf("%d", def.MaxStreamsPerShare),
+			ActualValue:  fmt.Sprintf("%d", cfg.MaxStreamsPerShare),
+			IsCustom:     cfg.MaxStreamsPerShare != def.MaxStreamsPerShare,
+		},
+		{
+			Key:          "--max-total-streams",
+			EnvVar:       "-",
+			Category:     "流控并发",
+			Description:  "全站所有 Share 汇总允许的最大并发多路复用子流总数",
+			DefaultValue: fmt.Sprintf("%d", def.MaxTotalStreams),
+			ActualValue:  fmt.Sprintf("%d", cfg.MaxTotalStreams),
+			IsCustom:     cfg.MaxTotalStreams != def.MaxTotalStreams,
+		},
+		{
+			Key:          "--db",
+			EnvVar:       "TEXLITE_DB_PATH",
+			Category:     "数据存储",
+			Description:  "SQLite 数据库持久化存储文件路径（启用 WAL 模式）",
+			DefaultValue: def.DBPath,
+			ActualValue:  cfg.DBPath,
+			IsCustom:     cfg.DBPath != def.DBPath,
+		},
+		{
+			Key:          "--asset-cache-dir",
+			EnvVar:       "TEXLITE_ASSET_CACHE_DIR",
+			Category:     "资源缓存",
+			Description:  "前端静态资源本地缓存目录（留空表示不开启本地文件缓存）",
+			DefaultValue: def.AssetCacheDir,
+			ActualValue:  cfg.AssetCacheDir,
+			IsCustom:     cfg.AssetCacheDir != def.AssetCacheDir,
+		},
+		{
+			Key:          "--asset-cache-max-mb",
+			EnvVar:       "-",
+			Category:     "资源缓存",
+			Description:  "静态资源缓存占用的最大磁盘空间（MB，采用 LRU 自动淘汰）",
+			DefaultValue: fmt.Sprintf("%d MB", def.AssetCacheMaxMB),
+			ActualValue:  fmt.Sprintf("%d MB", cfg.AssetCacheMaxMB),
+			IsCustom:     cfg.AssetCacheMaxMB != def.AssetCacheMaxMB,
+		},
+		{
+			Key:          "--admin-api-key",
+			EnvVar:       "TEXLITE_ADMIN_API_KEY",
+			Category:     "安全鉴权",
+			Description:  "管理后台 Web 页面及管理 API 的访问密钥（密钥已掩码保护）",
+			DefaultValue: "(未配置)",
+			ActualValue:  maskKey(cfg.AdminAPIKey),
+			IsCustom:     cfg.AdminAPIKey != def.AdminAPIKey,
+		},
+		{
+			Key:          "--create-api-key",
+			EnvVar:       "TEXLITE_CREATE_API_KEY",
+			Category:     "安全鉴权",
+			Description:  "限制创建 Share 权限的公共 API 密钥（留空则允许公开免密创建）",
+			DefaultValue: "(未配置 / 允许公开免密)",
+			ActualValue:  maskKey(cfg.CreateAPIKey),
+			IsCustom:     cfg.CreateAPIKey != def.CreateAPIKey,
+		},
+	}
+	return items
+}
+
+func maskKey(k string) string {
+	if k == "" {
+		return "(未配置 / 空)"
+	}
+	if len(k) <= 4 {
+		return "******"
+	}
+	return k[:2] + strings.Repeat("*", len(k)-4) + k[len(k)-2:]
+}
+
 func (h *AdminHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -348,8 +525,9 @@ const dashboardHTML = `<!DOCTYPE html>
     .online-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success); margin-right: 6px; }
     .offline-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); margin-right: 6px; }
     .mono { font-family: monospace; }
-    #modal, #edit-modal, #revoked-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
+    #modal, #edit-modal, #revoked-modal, #config-modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); justify-content: center; align-items: center; z-index: 1000; }
     #modal-box, #edit-modal-box, #revoked-modal-box { background: var(--card); border: 1px solid var(--border); padding: 24px; border-radius: 8px; max-width: 600px; width: 90%; }
+    #config-modal-box { background: var(--card); border: 1px solid var(--border); padding: 24px; border-radius: 8px; max-width: 980px; width: 95%; max-height: 88vh; display: flex; flex-direction: column; box-sizing: border-box; }
     pre { background: #0f172a; padding: 12px; border-radius: 6px; overflow-x: auto; color: #38bdf8; font-size: 13px; }
   </style>
 </head>
@@ -357,7 +535,10 @@ const dashboardHTML = `<!DOCTYPE html>
   <div class="container">
     <header>
       <h1>TexLite Share <span class="badge-local">Admin Port (Localhost)</span></h1>
-      <button onclick="refreshData()">↻ Refresh</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button onclick="openConfigModal()" style="background:#334155; color:#e2e8f0; font-weight:500;">⚙️ 系统配置</button>
+        <button onclick="refreshData()">↻ Refresh</button>
+      </div>
     </header>
 
     <div class="grid">
@@ -458,6 +639,44 @@ const dashboardHTML = `<!DOCTYPE html>
       </div>
       <div style="display:flex; justify-content:flex-end; margin-top:20px;">
         <button onclick="closeRevokedModal()">Close</button>
+      </div>
+    </div>
+  <div id="config-modal">
+    <div id="config-modal-box">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:12px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <h2 style="margin:0; font-size:18px; color:var(--text);">⚙️ 服务器参数与运行配置 (Server Configuration)</h2>
+          <span id="cfg-custom-badge" style="background:#0369a1; color:#e0f2fe; padding:2px 8px; border-radius:12px; font-size:11px;">加载中...</span>
+        </div>
+        <button style="background:transparent; color:var(--text-muted); font-size:18px; padding:2px 8px; border:none; cursor:pointer;" onclick="closeConfigModal()">✕</button>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:12px; flex-wrap:wrap;">
+        <input type="text" id="cfg-search" placeholder="🔍 搜索参数名、环境变量或说明..." oninput="filterConfigRows()" style="flex:1; min-width:240px; background:#0f172a; color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:6px; font-size:13px;">
+        <div style="font-size:12px; color:var(--text-muted);" id="cfg-summary-text"></div>
+      </div>
+
+      <div style="overflow-y:auto; flex:1; border:1px solid var(--border); border-radius:6px; background:#0f172a;">
+        <table style="margin-top:0; border-collapse:collapse; width:100%;">
+          <thead style="position:sticky; top:0; background:#1e293b; z-index:1;">
+            <tr>
+              <th style="padding:10px 12px;">参数名 / 环境变量</th>
+              <th style="padding:10px 12px; width:90px;">类别</th>
+              <th style="padding:10px 12px;">说明</th>
+              <th style="padding:10px 12px;">默认值 (Default)</th>
+              <th style="padding:10px 12px;">实际取值 (Actual)</th>
+              <th style="padding:10px 12px; width:70px; text-align:center;">状态</th>
+            </tr>
+          </thead>
+          <tbody id="config-tbody">
+            <tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">正在加载参数列表...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-top:16px;">
+        <span style="font-size:12px; color:var(--text-muted);">绿色高亮表示其实际取值与默认值不同。密钥参数已做掩码防护。</span>
+        <button onclick="closeConfigModal()">关闭</button>
       </div>
     </div>
   </div>
@@ -766,11 +985,117 @@ const dashboardHTML = `<!DOCTYPE html>
       document.getElementById('revoked-modal').style.display = 'none';
     }
 
+    let allConfigItems = [];
+
+    async function openConfigModal() {
+      document.getElementById('config-modal').style.display = 'flex';
+      if (allConfigItems.length === 0) {
+        try {
+          const res = await apiFetch('/api/v1/config');
+          if (res.ok) {
+            allConfigItems = await res.json();
+          } else {
+            document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">加载配置失败: ' + res.status + '</td></tr>';
+            return;
+          }
+        } catch (e) {
+          document.getElementById('config-tbody').innerHTML = '<tr><td colspan="6" style="text-align:center; color:var(--danger); padding:20px;">网络错误: ' + e + '</td></tr>';
+          return;
+        }
+      }
+      renderConfigRows(allConfigItems);
+    }
+
+    function closeConfigModal() {
+      document.getElementById('config-modal').style.display = 'none';
+    }
+
+    function renderConfigRows(items) {
+      const tbody = document.getElementById('config-tbody');
+      tbody.innerHTML = '';
+      let customCount = 0;
+
+      items.forEach(item => {
+        if (item.isCustom) customCount++;
+        const tr = document.createElement('tr');
+
+        const keyHtml = '<div style="font-weight:600; color:var(--primary); font-family:monospace;">' + escapeHtml(item.key) + '</div>' +
+          (item.envVar && item.envVar !== '-' ? '<div style="font-size:11px; color:var(--text-muted); font-family:monospace; margin-top:2px;">' + escapeHtml(item.envVar) + '</div>' : '');
+
+        const catBadge = '<span style="background:#334155; color:#cbd5e1; padding:2px 6px; border-radius:4px; font-size:11px; white-space:nowrap;">' + escapeHtml(item.category) + '</span>';
+
+        const defValHtml = '<code style="background:#1e293b; color:#94a3b8; padding:2px 6px; border-radius:4px; font-size:12px;">' + escapeHtml(item.defaultValue) + '</code>';
+
+        const actualStyle = item.isCustom
+          ? 'background:#064e3b; color:#6ee7b7; border:1px solid #059669; padding:2px 6px; border-radius:4px; font-size:12px; font-weight:600;'
+          : 'background:#1e293b; color:#cbd5e1; padding:2px 6px; border-radius:4px; font-size:12px;';
+
+        const actualValHtml = '<code style="' + actualStyle + '">' + escapeHtml(item.actualValue) + '</code>';
+
+        const statusBadge = item.isCustom
+          ? '<span style="background:#065f46; color:#a7f3d0; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; white-space:nowrap;">自定义</span>'
+          : '<span style="background:#334155; color:#94a3b8; padding:2px 8px; border-radius:10px; font-size:11px; white-space:nowrap;">默认</span>';
+
+        tr.innerHTML =
+          '<td>' + keyHtml + '</td>' +
+          '<td>' + catBadge + '</td>' +
+          '<td style="font-size:13px; color:#cbd5e1;">' + escapeHtml(item.description) + '</td>' +
+          '<td>' + defValHtml + '</td>' +
+          '<td>' + actualValHtml + '</td>' +
+          '<td style="text-align:center;">' + statusBadge + '</td>';
+        tbody.appendChild(tr);
+      });
+
+      const badge = document.getElementById('cfg-custom-badge');
+      if (customCount > 0) {
+        badge.style.background = '#065f46';
+        badge.style.color = '#a7f3d0';
+        badge.textContent = customCount + ' 项已自定义';
+      } else {
+        badge.style.background = '#334155';
+        badge.style.color = '#94a3b8';
+        badge.textContent = '全部使用默认值';
+      }
+
+      document.getElementById('cfg-summary-text').textContent = '共 ' + items.length + ' 项参数';
+    }
+
+    function filterConfigRows() {
+      const q = (document.getElementById('cfg-search').value || '').trim().toLowerCase();
+      if (!q) {
+        renderConfigRows(allConfigItems);
+        return;
+      }
+      const filtered = allConfigItems.filter(item => {
+        return (item.key && item.key.toLowerCase().includes(q)) ||
+               (item.envVar && item.envVar.toLowerCase().includes(q)) ||
+               (item.category && item.category.toLowerCase().includes(q)) ||
+               (item.description && item.description.toLowerCase().includes(q)) ||
+               (item.defaultValue && item.defaultValue.toLowerCase().includes(q)) ||
+               (item.actualValue && item.actualValue.toLowerCase().includes(q));
+      });
+      renderConfigRows(filtered);
+    }
+
     window.addEventListener('click', function(e) {
+      if (e.target === document.getElementById('config-modal')) closeConfigModal();
       if (e.target === document.getElementById('revoked-modal')) closeRevokedModal();
       if (e.target === document.getElementById('edit-modal')) document.getElementById('edit-modal').style.display = 'none';
       if (e.target === document.getElementById('modal')) document.getElementById('modal').style.display = 'none';
     });
+
+    window.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        closeConfigModal();
+        closeRevokedModal();
+        document.getElementById('edit-modal').style.display = 'none';
+        document.getElementById('modal').style.display = 'none';
+      }
+    });
+
+    if (location.pathname.endsWith('/config') || location.hash === '#config') {
+      openConfigModal();
+    }
 
     refreshData();
     setInterval(refreshData, 5000);

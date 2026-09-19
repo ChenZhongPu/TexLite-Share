@@ -214,5 +214,29 @@ func TestAdminDashboardAndAPIs(t *testing.T) {
 		t.Fatalf("expected error when extending revoked share, got %d", extRevokedRec.Code)
 	}
 
+	// 13. Verify GET /api/v1/config returns all parameters with defaults and actuals
+	cfgReq := httptest.NewRequest(http.MethodGet, "/api/v1/config", nil)
+	cfgReq.Header.Set("Authorization", "Bearer admin-key-123")
+	cfgRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(cfgRec, cfgReq)
+	if cfgRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for GET /api/v1/config, got %d", cfgRec.Code)
+	}
+	var configItems []api.ConfigItemView
+	if err := json.NewDecoder(cfgRec.Body).Decode(&configItems); err != nil {
+		t.Fatalf("failed to decode config items: %v", err)
+	}
+	if len(configItems) < 10 {
+		t.Fatalf("expected at least 10 config items, got %d", len(configItems))
+	}
+	// Verify that secret keys are masked
+	for _, it := range configItems {
+		if it.Key == "--admin-api-key" || it.Key == "--create-api-key" {
+			if strings.Contains(it.ActualValue, "admin-key-123") {
+				t.Fatalf("secret key leaked in plain text: %s", it.ActualValue)
+			}
+		}
+	}
+
 	_ = db
 }
