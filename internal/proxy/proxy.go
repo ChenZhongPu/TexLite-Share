@@ -197,6 +197,9 @@ func (p *ProxyHandler) serveReverseProxy(w http.ResponseWriter, r *http.Request,
 		req.Header.Set("X-Forwarded-Host", r.Host)
 		req.Header.Set("X-Forwarded-Proto", proto)
 		req.Header.Del("Forwarded")
+
+		// Force uncompressed responses from upstream to ensure cached assets are plain text.
+		req.Header.Set("Accept-Encoding", "identity")
 	}
 
 	rp.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {

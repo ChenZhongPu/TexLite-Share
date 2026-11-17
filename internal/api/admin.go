@@ -195,6 +195,11 @@ func (h *AdminHandler) handleListShares(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+
 	views := make([]ShareView, 0, len(shares))
 	for _, s := range shares {
 		sess, online := h.registry.Get(s.ID)
@@ -208,7 +213,7 @@ func (h *AdminHandler) handleListShares(w http.ResponseWriter, r *http.Request) 
 			country = "Unknown"
 		}
 
-		publicURL := fmt.Sprintf("http://%s.%s", s.ID, h.cfg.BaseDomain)
+		publicURL := fmt.Sprintf("%s://%s.%s", scheme, s.ID, h.cfg.BaseDomain)
 		views = append(views, ShareView{
 			ID:            s.ID,
 			ClientIP:      s.ClientIP,

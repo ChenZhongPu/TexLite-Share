@@ -215,7 +215,11 @@ func (a *ServerAPI) HandleCreateShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	publicURL := fmt.Sprintf("http://%s.%s", shareID, a.cfg.BaseDomain)
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	publicURL := fmt.Sprintf("%s://%s.%s", scheme, shareID, a.cfg.BaseDomain)
 	resp := CreateShareResponse{
 		ID:        shareID,
 		Token:     token,

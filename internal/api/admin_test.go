@@ -285,3 +285,49 @@ func TestAdminCreateShareWithCustomID(t *testing.T) {
 	}
 }
 
+func TestAdminCreateAndListSharesWithHTTPSForwardedProto(t *testing.T) {
+	adminHandler, _, _, _ := setupTestAdmin(t, "admin-key-123")
+
+	// Create share with X-Forwarded-Proto: https
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/shares", bytes.NewBufferString(`{"id":"secure-share-test","ttl":"2h"}`))
+	createReq.Header.Set("Authorization", "Bearer admin-key-123")
+	createReq.Header.Set("X-Forwarded-Proto", "https")
+	createRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(createRec, createReq)
+
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	var created api.CreateShareResponse
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if created.PublicURL != "https://secure-share-test.share.local" {
+		t.Fatalf("expected https URL 'https://secure-share-test.share.local', got %q", created.PublicURL)
+	}
+
+	// List shares with X-Forwarded-Proto: https
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/shares", nil)
+	listReq.Header.Set("Authorization", "Bearer admin-key-123")
+	listReq.Header.Set("X-Forwarded-Proto", "https")
+	listRec := httptest.NewRecorder()
+	adminHandler.ServeHTTP(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", listRec.Code)
+	}
+
+	var views []api.ShareView
+	if err := json.NewDecoder(listRec.Body).Decode(&views); err != nil {
+		t.Fatalf("failed to decode list views: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("expected 1 view, got %d", len(views))
+	}
+	if views[0].PublicURL != "https://secure-share-test.share.local" {
+		t.Fatalf("expected view publicUrl 'https://secure-share-test.share.local', got %q", views[0].PublicURL)
+	}
+}
+
+
